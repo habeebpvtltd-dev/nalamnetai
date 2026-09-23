@@ -17,5 +17,5 @@
 
   window.API_BASE = isLocal
     ? `http://${host}:8000/api/v1/xr`
-    : "https://YOUR-RENDER-APP.onrender.com/api/v1/xr";
+    : "https://nalamnetai-api.onrender.com";
 })();
