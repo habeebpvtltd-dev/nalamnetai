@@ -65,7 +65,7 @@
     #emergency-card .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; }
     #call-btn { background: #f87171; color: white; margin-top: 12px; }
 
-    #assistant-screen .panel { padding-bottom: calc(var(--tabs-height) + 90px); }
+    #assistant-screen .panel { padding-bottom: calc(var(--tabs-height) + 120px); }
     #chat-log { overflow-y: auto; }
     .msg { padding: 12px 16px; border-radius: 12px; margin-bottom: 12px; max-width: 85%; word-wrap: break-word; font-size: 18px; line-height: 1.5; letter-spacing: normal; }
     .msg.user { background: #4ade80; color: #000; margin-left: auto; }
@@ -142,6 +142,7 @@
         <div id="public-emergency-tools">
           <h3 style="margin-top:0;">Printable Medical ID</h3>
           <div style="display: flex; gap: 16px; align-items: flex-start;">
+            <div id="qr-error" style="display: none; color: #ef4444; font-size: 14px; padding: 10px; border: 1px solid #ef4444; border-radius: 8px;">Failed to load QR code.</div>
             <img id="qr-code-img" src="" style="width: 120px; background: white; padding: 8px; border-radius: 8px; display: none;" />
             <div style="display: flex; flex-direction: column; gap: 8px;">
               <button id="print-card-btn" style="background:#3b82f6; padding: 10px; font-size: 14px;">🖨️ Print Card (A6)</button>
@@ -174,7 +175,8 @@
     <button id="tab-assistant">💬 Assistant</button>
   </div>
 
-  <script src="config.js"></script>
-  <script src="app.js?v=4"></script>
+  <script src="config.js?v=7"></script>
+  <script src="voice.js?v=7"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>

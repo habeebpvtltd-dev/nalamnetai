@@ -17,6 +17,10 @@ function showScreen(name) {
   Object.values(tabs).forEach((t) => t.classList.remove("active"));
   screens[name].classList.add("active");
   tabs[name].classList.add("active");
+  
+  if (name === "assistant" && typeof playGreeting === "function") {
+      playGreeting();
+  }
 }
 tabs.scanner.addEventListener("click", () => showScreen("scanner"));
 tabs.emergency.addEventListener("click", () => showScreen("emergency"));
@@ -127,6 +131,7 @@ async function loadPublicTools(public_token, profile_data) {
     const res = await fetch(`${API_BASE}/emergency/${public_token}/qr`);
     if (res.ok) {
       const qrData = await res.json();
+      document.getElementById("qr-error").style.display = "none";
       document.getElementById("qr-code-img").src = `data:image/png;base64,${qrData.qr_code_base64}`;
       document.getElementById("qr-code-img").style.display = "block";
       
@@ -157,8 +162,17 @@ async function loadPublicTools(public_token, profile_data) {
       };
       
       document.getElementById("public-emergency-tools").style.display = "block";
+    } else {
+        document.getElementById("qr-error").style.display = "block";
+        document.getElementById("qr-code-img").style.display = "none";
+        document.getElementById("public-emergency-tools").style.display = "block";
     }
-  } catch(e) { console.error("QR load failed", e); }
+  } catch(e) { 
+      console.error("QR load failed", e); 
+      document.getElementById("qr-error").style.display = "block";
+      document.getElementById("qr-code-img").style.display = "none";
+      document.getElementById("public-emergency-tools").style.display = "block";
+  }
 }
 
 document.getElementById("save-emergency-btn").addEventListener("click", async () => {
@@ -224,110 +238,156 @@ document.getElementById("regenerate-btn").addEventListener("click", async () => 
 const chatLog = document.getElementById("chat-log");
 const chatInput = document.getElementById("chat-input");
 const micBtn = document.getElementById("mic-btn");
+const chatSendBtn = document.getElementById("chat-send-btn");
 
-function addMessage(text, sender, speechText = null) {
-  const div = document.createElement("div");
-  div.className = `msg ${sender}`;
-  div.innerHTML = text.replace(/\n/g, "<br>");
+function appendMessage(sender, text, msgId) {
+  const el = document.createElement("div");
+  el.className = `msg ${sender}`;
+  if (msgId) el.id = msgId;
   
-  if (sender === "ai" && speechText) {
-    const controls = document.createElement("div");
-    controls.className = "msg-controls";
-    
-    const stopBtn = document.createElement("button");
-    stopBtn.innerHTML = "⏹️ Stop";
-    stopBtn.onclick = () => window.speechSynthesis.cancel();
-    
-    const repeatBtn = document.createElement("button");
-    repeatBtn.innerHTML = "🔁 Repeat";
-    repeatBtn.onclick = () => speak(speechText);
-    
-    controls.appendChild(stopBtn);
-    controls.appendChild(repeatBtn);
-    div.appendChild(controls);
+  const textEl = document.createElement("div");
+  textEl.className = "msg-text";
+  textEl.innerHTML = text.replace(/\n/g, "<br/>");
+  el.appendChild(textEl);
+  
+  if (sender === "ai") {
+      const controls = document.createElement("div");
+      controls.className = "msg-controls";
+      
+      const repeatBtn = document.createElement("button");
+      repeatBtn.innerText = "🔁 Repeat";
+      repeatBtn.onclick = () => {
+          if (typeof replayAudio === "function") replayAudio(msgId);
+      };
+      
+      const stopBtn = document.createElement("button");
+      stopBtn.innerText = "⏹️ Stop";
+      stopBtn.onclick = () => {
+          if (typeof stopAnyAudio === "function") stopAnyAudio();
+      };
+      
+      controls.appendChild(repeatBtn);
+      controls.appendChild(stopBtn);
+      el.appendChild(controls);
   }
   
-  chatLog.appendChild(div);
-  chatLog.scrollTop = chatLog.scrollHeight;
+  chatLog.appendChild(el);
+  
+  setTimeout(() => {
+    chatLog.parentElement.scrollTop = chatLog.parentElement.scrollHeight;
+  }, 100);
 }
 
-window.speechSynthesis.onvoiceschanged = () => {};
-
-function speak(text) {
-  if (!("speechSynthesis" in window)) return;
-  window.speechSynthesis.cancel();
-  
-  let safeText = text.replace(/Dr\./gi, "Doctor");
-  safeText = safeText.replace(/(\d)\.(\d)/g, "$1[DOT]$2");
-  
-  let chunks = safeText.match(/[^.!?]+[.!?]*/g) || [safeText];
-  const voices = window.speechSynthesis.getVoices();
-  
-  chunks.forEach(sentence => {
-    if (!sentence.trim()) return;
-    sentence = sentence.replace(/\[DOT\]/g, ".");
-    
-    const utterance = new SpeechSynthesisUtterance(sentence.trim());
-    utterance.rate = 0.85;
-    
-    const isTamil = /[\u0B80-\u0BFF]/.test(sentence);
-    const targetLang = isTamil ? "ta-IN" : "en-IN";
-    
-    const preferredVoice = voices.find(v => v.lang === targetLang) || voices.find(v => v.lang.startsWith("en-"));
-    if (preferredVoice) utterance.voice = preferredVoice;
-    else utterance.lang = targetLang;
-    
-    window.speechSynthesis.speak(utterance);
-  });
-}
-
-async function sendChat() {
-  const question = chatInput.value.trim();
-  if (!question) return;
-  addMessage(question, "user");
-  chatInput.value = "";
-  try {
-    const params = new URLSearchParams({ question });
-    const res = await fetch(`${API_BASE}/assistant?${params}`, { method: "POST" });
-    if (!res.ok) throw new Error(`Server returned ${res.status}`);
-    const data = await res.json();
-    addMessage(data.display_text || data.answer, "ai", data.speech_text);
-    if (data.speech_text) speak(data.speech_text);
-  } catch (err) {
-    const errMsg = `Couldn't reach the assistant: ${err.message}`;
-    addMessage(`⚠️ ${errMsg}`, "ai");
-  }
-}
-document.getElementById("chat-send-btn").addEventListener("click", sendChat);
-chatInput.addEventListener("keydown", (e) => { if (e.key === "Enter") sendChat(); });
-
-/* ---------- Voice input (Web Speech API — built into the browser, no backend needed) ---------- */
-const SpeechRecognitionAPI = window.SpeechRecognition || window.webkitSpeechRecognition;
-if (SpeechRecognitionAPI) {
-  const recognition = new SpeechRecognitionAPI();
-  recognition.lang = "en-US"; // change to "ta-IN" for Tamil voice input
-  recognition.interimResults = false;
-  recognition.maxAlternatives = 1;
-
-  recognition.onstart = () => micBtn.classList.add("listening");
-  recognition.onend = () => micBtn.classList.remove("listening");
-  recognition.onerror = (e) => {
-    micBtn.classList.remove("listening");
-    alert("Voice recognition error: " + e.error);
-  };
-  recognition.onresult = (event) => {
-    const transcript = event.results[0][0].transcript;
-    chatInput.value = transcript;
-    sendChat();
-  };
-
-  micBtn.addEventListener("click", () => {
-    try {
-      recognition.start();
-    } catch (err) {
-      // recognition.start() throws if called while already listening — safe to ignore
+function appendSysNote(msgId, noteText) {
+    const el = document.getElementById(msgId);
+    if (el) {
+        const note = document.createElement("div");
+        note.style.fontSize = "12px";
+        note.style.color = "#f87171";
+        note.style.marginTop = "8px";
+        note.innerText = noteText;
+        el.appendChild(note);
     }
-  });
-} else {
-  micBtn.style.display = "none"; // hide mic button on browsers without speech support (e.g. some iOS Safari versions)
+}
+
+function addMessageTag(msgId, tagText) {
+    const el = document.getElementById(msgId);
+    if (el) {
+        const tag = document.createElement("div");
+        tag.style.fontSize = "11px";
+        tag.style.color = "#aaa";
+        tag.style.marginTop = "4px";
+        tag.innerText = tagText;
+        el.appendChild(tag);
+    }
+}
+
+const greetingId = "greeting-0";
+appendMessage("ai", "Vanakkam! I'm NalamNet. How can I help you today?", greetingId);
+
+if (micBtn) {
+    micBtn.addEventListener("click", () => {
+        if (typeof toggleRecording === "function") toggleRecording();
+    });
+}
+
+async function processVoiceInput(audioBlob) {
+    const tempId = "user-" + Date.now();
+    appendMessage("user", "🎙️ Processing...", tempId);
+    
+    const formData = new FormData();
+    formData.append("file", audioBlob, "audio.webm");
+    
+    try {
+        const res = await fetch(`${window.API_BASE}/voice/transcribe`, {
+            method: "POST",
+            body: formData,
+        });
+        const sttData = await res.json();
+        
+        const msgEl = document.getElementById(tempId);
+        if (msgEl) {
+            msgEl.querySelector(".msg-text").innerText = sttData.text;
+        }
+        
+        if (sttData.text) {
+            await handleAssistantQuery(sttData.text, sttData.language);
+        }
+    } catch (e) {
+        console.error(e);
+        const msgEl = document.getElementById(tempId);
+        if (msgEl) msgEl.querySelector(".msg-text").innerText = "❌ Voice error.";
+    }
+}
+
+async function handleAssistantQuery(text, lang) {
+  const aiId = "ai-" + Date.now();
+  appendMessage("ai", "Thinking...", aiId);
+
+  try {
+    const res = await fetch(`${window.API_BASE}/assistant?question=${encodeURIComponent(text)}&language=${lang}`, {
+      method: "POST",
+    });
+    const data = await res.json();
+    
+    const el = document.getElementById(aiId);
+    if (el) el.querySelector(".msg-text").innerHTML = (data.display_text || "").replace(/\n/g, "<br/>");
+
+    if (data.speech_text && typeof playAssistantAudio === "function") {
+        const ttsRes = await fetch(`${window.API_BASE}/voice/tts`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text: data.speech_text, language: lang })
+        });
+        const ttsData = await ttsRes.json();
+        const providerName = ttsData.provider === 'browser' ? 'Phone voice' : 'Sarvam';
+        addMessageTag(aiId, `🔊 ${providerName}`);
+        
+        playAssistantAudio(aiId, data.speech_text, lang, ttsData);
+    }
+  } catch (err) {
+    const el = document.getElementById(aiId);
+    if (el) el.querySelector(".msg-text").innerText = "Error reaching assistant.";
+  }
+}
+
+if (chatSendBtn) {
+    chatSendBtn.addEventListener("click", () => {
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = "";
+      
+      if (typeof unlockAudio === "function") unlockAudio();
+      
+      appendMessage("user", text, "user-" + Date.now());
+      
+      const isTamil = /[\u0B80-\u0BFF]/.test(text);
+      handleAssistantQuery(text, isTamil ? "ta" : "en");
+    });
+}
+
+if (chatInput) {
+    chatInput.addEventListener("keydown", (e) => { 
+        if (e.key === "Enter" && chatSendBtn) chatSendBtn.click(); 
+    });
 }

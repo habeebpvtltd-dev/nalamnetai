@@ -16,8 +16,14 @@ from passlib.context import CryptContext
 from groq import Groq
 
 from app.ai import extract_text, extract_text_from_pdf, classify_document, extract_fields
+from app.ai.voice import transcribe, synthesize
 from app.core.db import get_db
 from app.models.document import Document, ExtractedEntity, EmergencyProfile
+from pydantic import BaseModel
+
+class TTSRequest(BaseModel):
+    text: str
+    language: str = "en"
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -194,6 +200,10 @@ def unlock_emergency_profile(pin: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="No emergency profile set up yet")
     if not pwd_context.verify(pin, profile.pin_hash):
         raise HTTPException(status_code=401, detail="Incorrect PIN")
+        
+    if not profile.public_token:
+        profile.public_token = uuid.uuid4().hex
+        db.commit()
 
     return {
         "blood_group": profile.blood_group,
@@ -205,8 +215,26 @@ def unlock_emergency_profile(pin: str, db: Session = Depends(get_db)):
     }
 
 
+@router.post("/voice/transcribe")
+def voice_transcribe(file: UploadFile = File(...)):
+    try:
+        audio_bytes = file.file.read()
+        mime_type = file.content_type
+        return transcribe(audio_bytes, mime_type)
+    except Exception as e:
+        print(f"[ERROR] Voice transcribe error: {e}")
+        return {"text": "", "language": "en", "provider": "error"}
+
+@router.post("/voice/tts")
+def voice_tts(req: TTSRequest):
+    try:
+        return synthesize(req.text, req.language)
+    except Exception as e:
+        print(f"[ERROR] Voice TTS error: {e}")
+        return {"provider": "browser"}
+
 @router.post("/assistant")
-def ask_assistant(question: str, db: Session = Depends(get_db)):
+def ask_assistant(question: str, language: str = "en", db: Session = Depends(get_db)):
     """Answers a question grounded only in documents scanned so far (simple RAG)."""
     documents = db.query(Document).order_by(Document.created_at.desc()).limit(10).all()
     context_data = []
@@ -230,14 +258,16 @@ Answer ONLY using the document data provided.
 Copy medicine names and doctor names exactly as they appear. If the answer is not in the data, say you don't have that information.
 Never guess. For 'previous/last prescription' use only the most recent prescription.
 
+Reply in the language given: {language}. For 'ta', write display_text in simple spoken Tamil (Tamil script). Write speech_text in warm, natural spoken Tamil — the way a caring family member talks to an elderly person. Short sentences, polite forms (e.g. -ங்க endings), no formal written Tamil, no English symbols. Medicine names stay in English letters.
+
 Output MUST be a JSON object with two keys:
 1. "display_text": short simple sentences; medicines as a list, one per line, each with name + how to take it. Name in Title Case, not ALL CAPS.
-2. "speech_text": plain spoken sentences for elderly listeners, no symbols, no bullets, no slashes. Expand abbreviations: TAB -> tablet, INJ -> injection, MG -> milligram, IU -> units. Example: "Diamicron XR. Take one tablet in the morning and at night, before food."
+2. "speech_text": short (max 3 sentences), no symbols, write times and doses in words (e.g. 'night 8 o'clock', 'one tablet'; in Tamil: 'இரவு 8 மணிக்கு', 'ஒரு மாத்திரை'). Expand abbreviations: TAB -> tablet, INJ -> injection, MG -> milligram, IU -> units. Example: "Diamicron XR. Take one tablet in the morning and at night, before food."
 
 Scanned data:
 {context_json}
 
-Question: {question}
+Question ({language}): {question}
 """
     
     fallback_response = {
