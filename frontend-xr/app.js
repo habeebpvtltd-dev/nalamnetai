@@ -82,10 +82,32 @@ async function scanAndDisplay(file) {
 function renderResult(data) {
   docTypeEl.textContent = `Detected: ${data.object_type.replace(/_/g, " ")}`;
   fieldsListEl.innerHTML = "";
+
+  // Handwritten / low-confidence warning banner
+  const existingBanner = document.getElementById("handwritten-banner");
+  if (existingBanner) existingBanner.remove();
+
   const fields = data.fields || {};
   const confidences = data.field_confidence || {};
+  const isHandwritten = !!data.handwritten;
+  const meds = Array.isArray(fields.medications) ? fields.medications : [];
+  const hasLowConfMed = meds.some((m, i) => {
+    const nameKey = `medications_${i}_name`;
+    const medKey = `medications_${i}`;
+    const c = confidences[nameKey] ?? confidences[medKey] ?? confidences["medications"] ?? 1;
+    return c < 0.5;
+  });
+
+  if (isHandwritten || hasLowConfMed) {
+    const banner = document.createElement("div");
+    banner.id = "handwritten-banner";
+    banner.style.cssText = "background:#854d0e; color:#fef3c7; border:1px solid #ca8a04; border-radius:8px; padding:12px 16px; margin-bottom:16px; font-size:13px; display:flex; gap:10px; align-items:center;";
+    banner.innerHTML = `<span style="font-size:18px;">⚠️</span><span><strong>Handwritten prescription</strong> — please confirm these medicines with your pharmacist or doctor.</span>`;
+    fieldsListEl.appendChild(banner);
+  }
+
   if (Object.keys(fields).length === 0) {
-    fieldsListEl.innerHTML = `<div class="field-row"><span>No fields extracted — try a clearer, well-lit photo.</span></div>`;
+    fieldsListEl.innerHTML += `<div class="field-row"><span>No fields extracted — try a clearer, well-lit photo.</span></div>`;
   } else {
     for (const [key, value] of Object.entries(fields)) {
       const conf = confidences[key] || 0;
@@ -94,12 +116,19 @@ function renderResult(data) {
       if (Array.isArray(displayValue)) {
         if (displayValue.length > 0) {
           if (typeof displayValue[0] === 'object' && displayValue[0] !== null) {
-            displayValue = displayValue.map(item => {
+            displayValue = displayValue.map((item, idx) => {
+              // Per-medication confidence check
+              const nameKey = `medications_${idx}_name`;
+              const medKey = `medications_${idx}`;
+              const medConf = confidences[nameKey] ?? confidences[medKey] ?? confidences["medications"] ?? 1;
+              const unclearTag = medConf < 0.5
+                ? `<span style="color:#f59e0b; font-size:11px; margin-left:4px;">⚠ Unclear</span>`
+                : "";
               const itemRows = Object.entries(item)
                 .filter(([k, v]) => v !== null && v !== undefined && v !== "")
                 .map(([k, v]) => `<div class="sub-field"><strong>${k.replace(/_/g, " ")}:</strong> ${v}</div>`)
                 .join("");
-              return `<div class="obj-card">${itemRows}</div>`;
+              return `<div class="obj-card">${itemRows}${unclearTag}</div>`;
             }).join("");
           } else {
             displayValue = displayValue.join(", ");

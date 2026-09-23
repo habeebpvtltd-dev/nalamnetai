@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from groq import Groq
 
-from app.ai import extract_text, extract_text_from_pdf, classify_document, extract_fields
+from app.ai import extract_text, extract_text_from_pdf, classify_document, extract_fields, vision_classify_and_extract, check_vision_needed
 from app.ai.voice import transcribe, synthesize
 from app.core.db import get_db
 from app.models.document import Document, ExtractedEntity, EmergencyProfile
@@ -45,20 +45,91 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """    
     file_bytes = file.file.read()
     filename = (file.filename or "").lower()
-
     is_pdf = filename.endswith(".pdf") or file.content_type == "application/pdf"
-    
+
+    handwritten = False
+
     try:
-        raw_text = extract_text_from_pdf(file_bytes) if is_pdf else extract_text(file_bytes)
-        doc_type, class_confidence = classify_document(raw_text)
-        result = extract_fields(doc_type, raw_text)
+        if is_pdf:
+            raw_text = extract_text_from_pdf(file_bytes)
+            doc_type, class_confidence = classify_document(raw_text)
+            result = extract_fields(doc_type, raw_text)
+        else:
+            # Step 1: Tesseract + standard pipeline
+            from app.ai.ocr import (
+                _fix_orientation, preprocess_image, _tesseract_with_confidence,
+                MIN_TEXT_LENGTH, MIN_AVG_CONFIDENCE
+            )
+            oriented = _fix_orientation(file_bytes)
+            lang = os.environ.get("TESSERACT_LANG", "eng+tam")
+            processed = preprocess_image(oriented)
+            tess_text, avg_confidence = _tesseract_with_confidence(processed, lang)
+            print(f"[SCAN] Tesseract confidence: {avg_confidence:.1f}, length: {len(tess_text)}")
+
+            # Step 2: run standard classify+extract on Tesseract text
+            raw_text = tess_text.strip()
+            doc_type = "unclassified"
+            class_confidence = 0.0
+            result = {"fields": {}, "confidence": {}}
+
+            if len(raw_text) >= MIN_TEXT_LENGTH:
+                doc_type, class_confidence = classify_document(raw_text)
+                result = extract_fields(doc_type, raw_text)
+
+            # Step 3: check all four vision-retry triggers
+            needs_vision, vision_reason = check_vision_needed(
+                raw_text, avg_confidence, doc_type, result["fields"]
+            )
+
+            if needs_vision:
+                print(f"[SCAN] vision retry reason={vision_reason}")
+                vision_result = vision_classify_and_extract(file_bytes)
+                if vision_result:
+                    doc_type = vision_result.get("doc_type", doc_type)
+                    class_confidence = vision_result.get("classification_confidence", class_confidence)
+                    # Only show handwritten warning for prescriptions
+                    handwritten = bool(vision_result.get("handwritten", False)) and doc_type == "prescription"
+                    v_fields = vision_result.get("fields", {})
+                    v_confidence = vision_result.get("_confidence", {})
+                    # Validate through the pydantic schema
+                    from app.ai.extractor import SCHEMA_MAP, MANDATORY_FIELD_CONFIDENCE_THRESHOLD
+                    from pydantic import ValidationError as _VE
+                    schema = SCHEMA_MAP.get(doc_type)
+                    if schema:
+                        try:
+                            validated = schema(**v_fields)
+                            final_fields = {}
+                            for field_name, value in validated.model_dump().items():
+                                score = v_confidence.get(field_name, 0.0)
+                                # For medications, keep even low-confidence ones so UI can warn
+                                if doc_type == "prescription" and field_name == "medications":
+                                    final_fields[field_name] = value
+                                elif isinstance(score, (int, float)) and score >= MANDATORY_FIELD_CONFIDENCE_THRESHOLD:
+                                    final_fields[field_name] = value
+                                else:
+                                    final_fields[field_name] = None if not isinstance(value, list) else []
+                            result = {"fields": final_fields, "confidence": v_confidence}
+                        except _VE:
+                            result = {"fields": v_fields, "confidence": v_confidence}
+                    else:
+                        result = {"fields": v_fields, "confidence": v_confidence}
+                    raw_text = json.dumps(v_fields)  # store extracted JSON as text
+                else:
+                    # direct-extract failed — fallback to vision OCR text path
+                    print(f"[SCAN] vision direct-extract failed, fallback=vision_ocr")
+                    from app.ai.ocr import _extract_text_vision_fallback
+                    fallback_text = _extract_text_vision_fallback(file_bytes)
+                    if fallback_text.strip():
+                        raw_text = fallback_text.strip()
+                        doc_type, class_confidence = classify_document(raw_text)
+                        result = extract_fields(doc_type, raw_text)
+
     except Exception as e:
         print(f"[ERROR] Scan pipeline failed: {e}")
         return JSONResponse(
             status_code=422,
             content={"status": "error", "message": "Couldn't read this document clearly, please retake the photo"}
         )
-
 
     document = Document(document_type=doc_type, extracted_text=raw_text, status="needs_review")
     db.add(document)
@@ -79,6 +150,7 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
         "classification_confidence": class_confidence,
         "fields": result["fields"],
         "field_confidence": result["confidence"],
+        "handwritten": handwritten,
     }
 
 
@@ -258,10 +330,14 @@ Answer ONLY using the document data provided.
 Copy medicine names and doctor names exactly as they appear. If the answer is not in the data, say you don't have that information.
 Never guess. For 'previous/last prescription' use only the most recent prescription.
 
+UNCERTAINTY RULE: If a document was scanned from a handwritten prescription, or if any medicine has a confidence score below 0.5,
+you MUST mention in your response that those medicines could not be read clearly and the patient should confirm with a doctor or pharmacist.
+Never present an unclear medicine name as a confirmed fact.
+
 Reply in the language given: {language}. For 'ta', write display_text in simple spoken Tamil (Tamil script). Write speech_text in warm, natural spoken Tamil — the way a caring family member talks to an elderly person. Short sentences, polite forms (e.g. -ங்க endings), no formal written Tamil, no English symbols. Medicine names stay in English letters.
 
 Output MUST be a JSON object with two keys:
-1. "display_text": short simple sentences; medicines as a list, one per line, each with name + how to take it. Name in Title Case, not ALL CAPS.
+1. "display_text": short simple sentences; medicines as a list, one per line, each with name + how to take it. Name in Title Case, not ALL CAPS. Flag unclear medicines with "(⚠ Unclear — confirm with doctor)".
 2. "speech_text": short (max 3 sentences), no symbols, write times and doses in words (e.g. 'night 8 o'clock', 'one tablet'; in Tamil: 'இரவு 8 மணிக்கு', 'ஒரு மாத்திரை'). Expand abbreviations: TAB -> tablet, INJ -> injection, MG -> milligram, IU -> units. Example: "Diamicron XR. Take one tablet in the morning and at night, before food."
 
 Scanned data:

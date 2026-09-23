@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 _ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 load_dotenv(dotenv_path=_ENV_PATH)
 
-from .ocr import extract_text, extract_text_from_pdf
+from .ocr import extract_text, extract_text_from_pdf, vision_classify_and_extract, check_vision_needed
 from .classifier import classify_document
 from .extractor import extract_fields
 from .explainer import explain_document
@@ -20,6 +20,8 @@ from .anomaly import check_bill_anomaly
 __all__ = [
     "extract_text",
     "extract_text_from_pdf",
+    "vision_classify_and_extract",
+    "check_vision_needed",
     "classify_document",
     "extract_fields",
     "explain_document",

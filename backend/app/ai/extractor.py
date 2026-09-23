@@ -18,9 +18,15 @@ MANDATORY_FIELD_CONFIDENCE_THRESHOLD = 0.50
 class ElectricityBillFields(BaseModel):
     provider: Optional[str] = None
     consumer_number: Optional[str] = None
-    amount: Optional[float] = None
-    due_date: Optional[str] = None
+    service_number: Optional[str] = None
     billing_period: Optional[str] = None
+    previous_reading: Optional[float] = None
+    present_reading: Optional[float] = None
+    units_consumed: Optional[float] = None
+    amount_due: Optional[float] = None
+    due_date: Optional[str] = None
+    energy_charges: Optional[float] = None
+    fixed_charges: Optional[float] = None
 
 
 class Medication(BaseModel):

@@ -1,17 +1,18 @@
 """
 OCR module: image preprocessing (OpenCV) + text extraction (Tesseract),
 with a Groq vision-model fallback for images Tesseract struggles with
-(stylized layouts, dense tables, small/decorative fonts), automatic
-EXIF orientation correction, and PDF support.
+(handwritten, stylized layouts, dense tables, small/decorative fonts),
+automatic EXIF orientation correction, and PDF support.
 """
 import os
 import io
+import json
 import base64
+import re
 import cv2
 import numpy as np
 import pytesseract
 import fitz  # PyMuPDF, for PDF page rendering
-import re
 from PIL import Image, ImageOps
 from groq import Groq
 
@@ -24,10 +25,64 @@ elif os.name == "nt":
 # else: leave as default "tesseract" found on PATH (Linux / Docker)
 
 groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-VISION_MODEL = "qwen/qwen3.8-27b"
 
+# Tesseract fallback thresholds
 MIN_TEXT_LENGTH = 40
 MIN_AVG_CONFIDENCE = 55
+# Smarter fallback trigger threshold (characters)
+VISION_TEXT_LENGTH_THRESHOLD = 150
+
+# Vision model for direct classify+extract from image.
+# Override with VISION_MODEL env var (e.g. in .env) without code changes.
+VISION_MODEL = os.environ.get("VISION_MODEL", "qwen/qwen3.8-27b")
+
+# Key fields whose absence signals we need a vision retry
+_KEY_FIELDS = {
+    "prescription": "medications",
+    "shopping_bill": "items",
+    "electricity_bill": "amount",
+    "warranty_card": "product_name",
+}
+
+# Document-type JSON schemas for single-shot vision extraction
+_DOC_SCHEMAS = {
+    "prescription": {
+        "doctor_name": "string or null",
+        "date": "string or null",
+        "medications": [
+            {"name": "string", "dosage": "string or null", "frequency": "string or null", "duration_days": "integer or null"}
+        ],
+        "follow_up_date": "string or null"
+    },
+    "electricity_bill": {
+        "provider": "string or null",
+        "consumer_number": "string or null",
+        "service_number": "string or null",
+        "billing_period": "string or null",
+        "previous_reading": "number or null",
+        "present_reading": "number or null",
+        "units_consumed": "number or null",
+        "amount_due": "number or null",
+        "due_date": "string or null",
+        "energy_charges": "number or null",
+        "fixed_charges": "number or null"
+    },
+    "shopping_bill": {
+        "store_name": "string or null",
+        "date": "string or null",
+        "items": ["string"],
+        "total_amount": "number or null",
+        "payment_method": "string or null"
+    },
+    "warranty_card": {
+        "product_name": "string or null",
+        "brand": "string or null",
+        "purchase_date": "string or null",
+        "warranty_months": "integer or null",
+        "serial_number": "string or null",
+        "calculated_expiry_date": "string or null"
+    }
+}
 
 
 def _fix_orientation(image_bytes: bytes) -> bytes:
@@ -122,7 +177,7 @@ def _resize_for_vision_api(image_bytes: bytes, max_dimension: int = 1600, qualit
 
 
 def _extract_text_vision_fallback(image_bytes: bytes) -> str:
-    """Fallback OCR via Groq's multimodal vision model for hard images."""
+    """Fallback plain-text OCR via Groq's vision model for hard images."""
     resized_bytes, w, h = _resize_for_vision_api(image_bytes, 1600, 85)
     b64_image = base64.b64encode(resized_bytes).decode("utf-8")
 
@@ -154,11 +209,125 @@ def _extract_text_vision_fallback(image_bytes: bytes) -> str:
     return raw_text
 
 
+def vision_classify_and_extract(image_bytes: bytes) -> dict | None:
+    """
+    Single-shot vision extraction: sends the image directly to Llama 4 Scout
+    and asks it to classify the document AND extract all fields in one call.
+    Returns a dict with keys: doc_type, fields, confidence, handwritten.
+    Returns None on failure.
+
+    This is used instead of image->text->LLM when Tesseract struggles.
+    Uses Llama 4 Scout (meta-llama/llama-4-scout-17b-16e-instruct) — the
+    most capable natively multimodal model on Groq for handwriting tasks.
+    """
+    resized_bytes, w, h = _resize_for_vision_api(image_bytes, 1600, 85)
+    b64_image = base64.b64encode(resized_bytes).decode("utf-8")
+
+    if len(b64_image) > 3 * 1024 * 1024:
+        resized_bytes, w, h = _resize_for_vision_api(image_bytes, 1200, 75)
+        b64_image = base64.b64encode(resized_bytes).decode("utf-8")
+
+    print(f"[OCR] Vision direct-extract payload: {len(b64_image)//1024} KB, {w}x{h}")
+
+    schemas_json = json.dumps(_DOC_SCHEMAS, indent=2)
+    prompt = f"""You are a medical document extraction specialist. Look at this image carefully.
+
+STEP 1 — Classify: determine the document type. Choose exactly one:
+  electricity_bill | prescription | warranty_card | shopping_bill | unclassified
+
+STEP 2 — Extract: extract all fields using the schema for the detected type:
+{schemas_json}
+
+SAFETY RULES (mandatory):
+- If a word is not clearly readable, return it exactly as seen with field confidence below 0.5.
+- Never replace an unclear word with a similar-looking real medicine name.
+- Never invent doses or timings that are not explicitly written in the document.
+- Medicine names must appear in the document; do NOT guess common brand names.
+
+STEP 3 — Assess: set "handwritten" to true ONLY if the main content (medicine names, items, doses, or quantities) is physically written by hand — NOT printed, typed, or computer-generated. A printed pharmacy label, printed bill, or typed receipt is NOT handwritten even if it has a handwritten signature or stamp. Set false for all printed documents.
+
+Respond ONLY with a single JSON object with this exact structure:
+{{
+  "doc_type": "<one of the five types>",
+  "classification_confidence": <0.0-1.0>,
+  "handwritten": <true|false>,
+  "fields": {{ <fields matching the schema for doc_type> }},
+  "_confidence": {{ "<field_name>": <0.0-1.0>, ... }}
+}}
+
+For prescription medications, "_confidence" should include per-medication confidence like:
+"_confidence": {{ "medications": 0.8, "medications_0_name": 0.9, "medications_0_dosage": 0.4 }}
+
+If the document is unclassified, return "fields": {{}} and "_confidence": {{}}.
+"""
+
+    try:
+        response = groq_client.chat.completions.create(
+            model=VISION_MODEL,
+            max_tokens=2000,
+            messages=[{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                ],
+            }],
+        )
+        raw = response.choices[0].message.content.strip()
+        # Strip any <think> blocks (reasoning models)
+        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+        # Extract JSON
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start != -1 and end != -1:
+            raw = raw[start:end+1]
+        parsed = json.loads(raw)
+        print(f"[OCR] Vision direct-extract result: type={parsed.get('doc_type')} handwritten={parsed.get('handwritten')}")
+        return parsed
+    except Exception as e:
+        print(f"[ERROR] Vision direct-extract failed: {e}")
+        return None
+
+
+def _key_fields_missing(doc_type: str, fields: dict) -> bool:
+    """Returns True if the critical field for this doc type is absent/empty."""
+    key = _KEY_FIELDS.get(doc_type)
+    if not key:
+        return False
+    val = fields.get(key)
+    if val is None:
+        return True
+    if isinstance(val, list) and len(val) == 0:
+        return True
+    return False
+
+
+def check_vision_needed(
+    text: str,
+    avg_confidence: float,
+    doc_type: str,
+    fields: dict,
+) -> tuple[bool, str]:
+    """
+    Decide whether the vision direct-extract path should be triggered.
+    Returns (should_use_vision, reason_string).
+    """
+    if avg_confidence < MIN_AVG_CONFIDENCE:
+        return True, f"tesseract_confidence={avg_confidence:.1f}<{MIN_AVG_CONFIDENCE}"
+    if len(text) < VISION_TEXT_LENGTH_THRESHOLD:
+        return True, f"text_length={len(text)}<{VISION_TEXT_LENGTH_THRESHOLD}"
+    if doc_type == "unclassified":
+        return True, "classification=unclassified"
+    if _key_fields_missing(doc_type, fields):
+        return True, f"key_fields_missing_for_{doc_type}"
+    return False, ""
+
+
 def extract_text(image_bytes: bytes, lang: str = "eng+tam") -> str:
     """
     Main entrypoint for images: correct orientation, try Tesseract first
     (fast, free). If the result is too short or too low-confidence, fall
-    back to the Groq vision model.
+    back to the Groq vision model for plain-text OCR.
     """
     image_bytes = _fix_orientation(image_bytes)
     processed = preprocess_image(image_bytes)
@@ -166,7 +335,7 @@ def extract_text(image_bytes: bytes, lang: str = "eng+tam") -> str:
     print(f"[OCR] Tesseract confidence: {avg_confidence:.1f}, length: {len(text)}")
 
     if len(text) < MIN_TEXT_LENGTH or avg_confidence < MIN_AVG_CONFIDENCE:
-        print("[OCR] Falling back to Groq vision model...")
+        print("[OCR] Falling back to Groq vision model (plain text)...")
         text = _extract_text_vision_fallback(image_bytes)
 
     return text.strip()
