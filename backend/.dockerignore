@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Secrets
+.env
+
+# Uploads / test media
+uploads/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+
+# DB files
+*.db
+*.sqlite3
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# Editor
+.DS_Store
+Thumbs.db

@@ -1,0 +1,37 @@
+# --- Web framework ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+python-multipart==0.0.19
+starlette==0.41.3
+
+# --- Database ---
+sqlalchemy==2.0.36
+alembic==1.14.0
+psycopg[binary]==3.2.10
+pgvector==0.3.6
+
+# --- Auth & security ---
+python-jose[cryptography]==3.3.0
+passlib[argon2]==1.7.4
+
+# --- Validation ---
+pydantic==2.13.5
+pydantic-settings==2.15.0
+
+# --- AI / OCR pipeline ---
+groq==0.13.0
+opencv-python-headless==5.0.0.93
+pytesseract==0.3.13
+pillow==12.3.0
+numpy==2.5.3
+PyMuPDF==1.28.2
+qrcode[pil]==8.2
+
+# --- Rate limiting ---
+slowapi==0.1.9
+
+# --- Testing ---
+pytest==8.3.4
+pytest-asyncio==0.25.0
+httpx==0.28.1
+python-dotenv==1.2.3

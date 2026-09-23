@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>NalamNet Spatial</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; background: #000; font-family: -apple-system, sans-serif; overflow: hidden; color: white; height: 100%; }
+    .screen { display: none; width: 100vw; height: 100vh; position: relative; }
+    .screen.active { display: block; }
+
+    :root { --tabs-height: 70px; }
+
+    #scan-placeholder {
+      display: flex; align-items: center; justify-content: center; flex-direction: column;
+      min-height: 50vh; padding: 20px; text-align: center; color: #888; font-size: 18px;
+      transition: all 0.3s ease;
+    }
+    #preview-img { margin-top: 16px; }
+    #scan-buttons {
+      position: fixed; bottom: calc(var(--tabs-height) + 20px); left: 0; right: 0;
+      display: flex; justify-content: center; align-items: center; gap: 24px; z-index: 5;
+    }
+    #capture-btn {
+      width: 70px; height: 70px; border-radius: 50%; background: white; border: 4px solid #ccc; font-size: 28px;
+    }
+    #upload-btn {
+      width: 54px; height: 54px; border-radius: 50%; background: #1c1c1c; border: 2px solid #4ade80;
+      font-size: 22px; color: #4ade80;
+    }
+    #result-card {
+      position: relative; margin: 20px;
+      background: rgba(20,20,20,0.92); border-radius: 16px; padding: 16px; display: none; z-index: 5;
+    }
+    #result-card.visible { display: block; }
+    #result-card h3 { margin: 0 0 8px; color: #4ade80; }
+    .field-row { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid rgba(255,255,255,0.1); flex-wrap: wrap; }
+    .obj-card { background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-top: 8px; width: 100%; }
+    .sub-field { font-size: 14px; margin-bottom: 4px; }
+    .sub-field strong { color: #888; text-transform: capitalize; }
+    .conf-high { color: #4ade80; }
+    .conf-low { color: #fbbf24; }
+    .conf-empty { color: #f87171; font-style: italic; }
+    #status {
+      position: fixed; bottom: calc(var(--tabs-height) + 100px); left: 50%; transform: translateX(-50%);
+      background: rgba(0,0,0,0.7); padding: 8px 16px; border-radius: 20px; display: none; z-index: 5;
+    }
+
+    .panel {
+      height: 100%;
+      overflow-y: auto;
+      background: #111;
+      padding: 24px 20px calc(var(--tabs-height) + 24px) 20px;
+    }
+    .panel h2 { margin-top: 0; }
+    .panel input { width: 100%; padding: 12px; margin-bottom: 10px; border-radius: 8px;
+      border: 1px solid #333; background: #1c1c1c; color: white; font-size: 15px; }
+    .panel button { width: 100%; padding: 14px; border-radius: 8px; border: none;
+      background: #4ade80; color: #000; font-weight: bold; font-size: 15px; }
+
+    #emergency-card { display: none; background: #1c1c1c; border: 2px solid #f87171;
+      border-radius: 16px; padding: 20px; margin-top: 16px; margin-bottom: 20px; }
+    #emergency-card.visible { display: block; }
+    #emergency-card .row { display: flex; justify-content: space-between; gap: 12px; padding: 6px 0; }
+    #call-btn { background: #f87171; color: white; margin-top: 12px; }
+
+    #assistant-screen .panel { padding-bottom: calc(var(--tabs-height) + 90px); }
+    #chat-log { overflow-y: auto; }
+    .msg { padding: 12px 16px; border-radius: 12px; margin-bottom: 12px; max-width: 85%; word-wrap: break-word; font-size: 18px; line-height: 1.5; letter-spacing: normal; }
+    .msg.user { background: #4ade80; color: #000; margin-left: auto; }
+    .msg.ai { background: #1c1c1c; color: white; }
+    .msg-controls { margin-top: 10px; display: flex; gap: 10px; }
+    .msg-controls button { background: #333; color: white; border: none; padding: 6px 12px; border-radius: 6px; font-size: 14px; cursor: pointer; flex: 1; }
+    #chat-input-row {
+      position: fixed;
+      left: 0; right: 0;
+      bottom: var(--tabs-height);
+      display: flex; gap: 8px;
+      padding: 12px 16px;
+      background: #111;
+      border-top: 1px solid #222;
+      z-index: 8;
+    }
+    #chat-input { flex: 1; padding: 12px; border-radius: 8px; border: 1px solid #333; background: #1c1c1c; color: white; font-size: 15px; }
+    #chat-send-btn { width: auto; padding: 12px 20px; white-space: nowrap; }
+    #mic-btn { width: 44px; padding: 12px; font-size: 18px; background: #1c1c1c; border: 2px solid #4ade80; color: #4ade80; }
+    #mic-btn.listening { background: #f87171; border-color: #f87171; color: white; animation: pulse 1s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+
+    #tabs {
+      position: fixed; bottom: 0; left: 0; right: 0; height: var(--tabs-height);
+      background: rgba(15,15,15,0.97); display: flex; z-index: 10; border-top: 1px solid #222;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+    }
+    #tabs button { flex: 1; background: none; border: none; color: #888; font-size: 13px; }
+    #tabs button.active { color: #4ade80; }
+  </style>
+</head>
+<body>
+
+  <div id="scanner-screen" class="screen active" style="overflow-y: auto; padding-bottom: 120px;">
+    <div id="scan-placeholder">
+      <p>📷 Scan or upload a document — electricity bill, prescription, warranty card, or receipt</p>
+      <img id="preview-img" style="display:none; max-width:100%; max-height:40vh; border-radius:12px; margin-top: 10px;" />
+    </div>
+    <div id="result-card"><h3 id="doc-type">—</h3><div id="fields-list"></div></div>
+    <div id="status">Analyzing...</div>
+
+    <input type="file" id="native-camera-input" accept="image/*" capture="environment" style="display:none;" />
+    <input type="file" id="upload-input" accept="image/*,application/pdf" style="display:none;" />
+
+    <div id="scan-buttons">
+      <button id="upload-btn">📁</button>
+      <button id="capture-btn">📷</button>
+    </div>
+  </div>
+
+  <div id="emergency-screen" class="screen">
+    <div class="panel">
+      <h2>🚨 Emergency Profile</h2>
+      <div id="setup-form">
+        <input id="e-blood" placeholder="Blood group (e.g. O+)" />
+        <input id="e-allergies" placeholder="Allergies" />
+        <input id="e-conditions" placeholder="Medical conditions" />
+        <input id="e-contact" placeholder="Emergency contact number" />
+        <input id="e-hospital" placeholder="Preferred hospital" />
+        <input id="e-pin" placeholder="Set a 4-digit PIN" type="password" inputmode="numeric" />
+        <button id="save-emergency-btn">Save Emergency Profile</button>
+      </div>
+      <hr style="border-color:#333; margin:24px 0;" />
+      <input id="unlock-pin" placeholder="Enter PIN to view" type="password" inputmode="numeric" />
+      <button id="unlock-emergency-btn">Unlock Emergency Mode</button>
+      <div id="emergency-card">
+        <div class="row"><strong>Blood Group</strong><span id="v-blood"></span></div>
+        <div class="row"><strong>Allergies</strong><span id="v-allergies"></span></div>
+        <div class="row"><strong>Conditions</strong><span id="v-conditions"></span></div>
+        <div class="row"><strong>Hospital</strong><span id="v-hospital"></span></div>
+        <button id="call-btn">📞 Call <span id="v-contact"></span></button>
+        
+        <hr style="border-color:#333; margin:20px 0;" />
+        <div id="public-emergency-tools">
+          <h3 style="margin-top:0;">Printable Medical ID</h3>
+          <div style="display: flex; gap: 16px; align-items: flex-start;">
+            <img id="qr-code-img" src="" style="width: 120px; background: white; padding: 8px; border-radius: 8px; display: none;" />
+            <div style="display: flex; flex-direction: column; gap: 8px;">
+              <button id="print-card-btn" style="background:#3b82f6; padding: 10px; font-size: 14px;">🖨️ Print Card (A6)</button>
+              <button id="regenerate-btn" style="background:transparent; border: 1px solid #666; color: #ccc; padding: 10px; font-size: 14px;">🔄 Regenerate Link</button>
+            </div>
+          </div>
+          <h3 style="margin-top: 24px;">Lock-Screen Setup</h3>
+          <p style="font-size: 13px; color: #ccc; margin-top: 0;">Copy this into Android Emergency info / iPhone Medical ID:</p>
+          <textarea id="lock-screen-text" rows="5" readonly style="width: 100%; background: #000; color: #fff; padding: 12px; border-radius: 8px; border: 1px solid #333; font-family: monospace;"></textarea>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="assistant-screen" class="screen">
+    <div class="panel">
+      <h2>💬 Nalam Assistant</h2>
+      <div id="chat-log"></div>
+    </div>
+    <div id="chat-input-row">
+      <button id="mic-btn">🎤</button>
+      <input id="chat-input" placeholder="Ask, or tap the mic to speak..." />
+      <button id="chat-send-btn">Ask</button>
+    </div>
+  </div>
+
+  <div id="tabs">
+    <button id="tab-scanner" class="active">📷 Scan</button>
+    <button id="tab-emergency">🚨 Emergency</button>
+    <button id="tab-assistant">💬 Assistant</button>
+  </div>
+
+  <script src="config.js"></script>
+  <script src="app.js?v=4"></script>
+</body>
+</html>
