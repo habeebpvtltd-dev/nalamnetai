@@ -48,6 +48,15 @@ window.BodyAR = !window.THREE ? null : (() => {
   let lastPlaceTap = -Infinity;   // debounce for the place/move buttons
   let anchor = null;              // XRAnchor pinning the placed body to the world (if supported)
   let anchorWanted = false;       // create an anchor on the next XR frame (needs an active frame)
+  // Anchor sanity guard. A stationary anchor never legitimately teleports: after a tracking
+  // LOST -> OK recovery ARCore can report a bogus anchor pose (seen on device: +11 m in Y).
+  const MAX_ANCHOR_JUMP_M = 2.0;                            // per applied update
+  const MAX_ANCHOR_TURN = THREE.MathUtils.degToRad(45);
+  const ANCHOR_DETACH_AFTER = 30;                           // consecutive rejects -> stop following
+  const goodAnchorPos = new THREE.Vector3(), goodAnchorQuat = new THREE.Quaternion();
+  let haveGoodAnchor = false, anchorRejects = 0, anchorLog = [];
+  let trackingOK = false;         // this frame has a real (non-emulated) viewer pose
+  let pendingFocus = -1;          // focus requested while tracking was not OK -> retry when it is
   const PLACE_DEBOUNCE_MS = 400;
   // Placement distance per size: Life is placed further away so the whole 1.65 m figure
   // fits in the phone's view without stepping back. Base is 0.9 m below the viewer's eyes.
@@ -340,6 +349,9 @@ window.BodyAR = !window.THREE ? null : (() => {
     try {
       const m = I.markers.find((x) => x.index === i);
       const pl = items[i] && items[i].placement;
+      // No TRACKING pose right now (LOST/LIMITED): focus as soon as tracking is back,
+      // rather than computing from an untrustworthy pose.
+      if (placed && rig && m && pl && !hasPose) { pendingFocus = i; return; }
       if (!placed || !rig || !hasPose || !m || !pl) { if (focusedIdx >= 0) unfocus(); return; }
       arRoot.updateMatrixWorld(true);
       const sRoot = arRoot.scale.x;
@@ -416,7 +428,10 @@ window.BodyAR = !window.THREE ? null : (() => {
         const m5 = pose.views[0].projectionMatrix[5];
         if (m5 > 0.2) camVFov = 2 * Math.atan(1 / m5);    // real camera vertical FOV
       }
-      if (pose) {
+      // Only a TRACKING pose is trusted for placement/focus. LIMITED (emulatedPosition)
+      // has a made-up position, and LOST has none: both count as "no pose" here.
+      trackingOK = !!(pose && !pose.emulatedPosition);
+      if (trackingOK) {
         const p = pose.transform.position, o = pose.transform.orientation;
         setViewerPose(p, o);
       } else {
@@ -424,10 +439,12 @@ window.BodyAR = !window.THREE ? null : (() => {
       }
     } catch (e) {
       hasPose = false;
+      trackingOK = false;
     }
 
-    // 2) A tap that arrived without a pose is retried here, every frame, until one arrives.
+    // 2) Taps that arrived without a good pose are retried here once tracking is OK.
     if (pendingPlace && hasPose) doPlace(pendingMode);
+    if (pendingFocus >= 0 && hasPose) { const i = pendingFocus; pendingFocus = -1; focusOn(i); }
 
     // 3) World anchor: create it (needs an active frame), then follow ITS world pose.
     updateAnchor(frame);
@@ -512,6 +529,7 @@ window.BodyAR = !window.THREE ? null : (() => {
         lines.push(`anchor: none  (enabled=${ANCHORS_ON}, wanted=${anchorWanted}, created=${dbg.anchorMade}, api=${typeof frame.createAnchor === "function"})`);
       }
       if (dbg.anchorErr) lines.push(`anchor error: ${dbg.anchorErr}`);
+      if (anchorLog.length) lines.push(`anchor guard: ${anchorRejects} rejects in a row; last: ${anchorLog[anchorLog.length - 1]}`);
       const feats = session && session.enabledFeatures ? Array.from(session.enabledFeatures).join(",") : "n/a";
       lines.push(`hit-test: ${hitSource ? "on" : "off"}  hits=${dbg.hits}   features: ${feats}`);
 
@@ -533,7 +551,7 @@ window.BodyAR = !window.THREE ? null : (() => {
   }
 
   async function copyDebug() {
-    const text = `${dbg.lastText}\n--- last 30 s (2/s) ---\n${dbg.history.join("\n")}\nUA: ${navigator.userAgent}`;
+    const text = `${dbg.lastText}\n--- last 30 s (2/s) ---\n${dbg.history.join("\n")}\n--- anchor guard ---\n${anchorLog.join("\n") || "(no rejections)"}\nUA: ${navigator.userAgent}`;
     try { await navigator.clipboard.writeText(text); toast("Debug log copied"); }
     catch (e) { toast("Copy failed — take a screenshot instead"); }
   }
@@ -562,17 +580,50 @@ window.BodyAR = !window.THREE ? null : (() => {
               .catch((e) => { anchor = null; if (DEBUG) dbg.anchorErr = String((e && e.message) || e); });   // unsupported: keep the fixed transform
         }
       }
-      if (anchor && frame.trackedAnchors && frame.trackedAnchors.has(anchor)) {
+      // Follow the anchor only on TRACKING frames, and only by plausible amounts.
+      if (anchor && trackingOK && frame.trackedAnchors && frame.trackedAnchors.has(anchor)) {
         const ap = frame.getPose(anchor.anchorSpace, refSpace);
         if (ap) {
           const p = ap.transform.position, o = ap.transform.orientation;
-          arRoot.position.set(p.x, p.y, p.z);
-          arRoot.quaternion.set(o.x, o.y, o.z, o.w);   // scale is untouched (Table/Life)
+          const np = new THREE.Vector3(p.x, p.y, p.z), nq = new THREE.Quaternion(o.x, o.y, o.z, o.w);
+          if (haveGoodAnchor) {
+            const jump = np.distanceTo(goodAnchorPos), turn = nq.angleTo(goodAnchorQuat);
+            if (jump > MAX_ANCHOR_JUMP_M || turn > MAX_ANCHOR_TURN) {
+              rejectAnchorPose(np, jump, turn);
+              return;                                   // keep the last good position
+            }
+          }
+          arRoot.position.copy(np);
+          arRoot.quaternion.copy(nq);                   // scale is untouched (Table/Life)
+          goodAnchorPos.copy(np); goodAnchorQuat.copy(nq); haveGoodAnchor = true;
+          anchorRejects = 0;
         }
       }
     } catch (e) {
       // Anchors are optional; on any error keep the fixed placement.
       anchorWanted = false;
+    }
+  }
+
+  function rejectAnchorPose(np, jump, turn) {
+    anchorRejects++;
+    const fmt = (v) => `(${v.x.toFixed(3)}, ${v.y.toFixed(3)}, ${v.z.toFixed(3)})`;
+    const msg = `[ANCHOR] rejected implausible jump: ${fmt(goodAnchorPos)} -> ${fmt(np)} (${jump.toFixed(2)} m, ${THREE.MathUtils.radToDeg(turn).toFixed(0)}°)`;
+    // Log the first few and then every 10th, so a stuck anchor doesn't flood the console.
+    if (anchorRejects <= 3 || anchorRejects % 10 === 0) console.warn(msg + (anchorRejects > 1 ? ` x${anchorRejects}` : ""));
+    anchorLog.push(`${((performance.now() - t0) / 1000).toFixed(1)}s ${msg}`);
+    if (anchorLog.length > 20) anchorLog.shift();
+    if (anchorRejects === 1) {
+      const h = $("ar-hint");
+      if (h) { h.hidden = false; h.textContent = "Tracking hiccup — tap ↻ Move if the body looks off"; }
+    }
+    if (anchorRejects >= ANCHOR_DETACH_AFTER) {
+      // The anchor keeps reporting nonsense: stop following it and keep the fixed placement.
+      console.warn(`[ANCHOR] detached after ${anchorRejects} implausible poses; keeping last good position ${fmt(goodAnchorPos)}`);
+      anchorLog.push(`[ANCHOR] detached after ${anchorRejects} rejects`);
+      try { anchor && anchor.delete(); } catch (e) {}
+      anchor = null;
+      anchorRejects = 0;
     }
   }
 
@@ -666,6 +717,9 @@ window.BodyAR = !window.THREE ? null : (() => {
     arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
     arRoot.scale.setScalar(SCALE[size]);
     arRoot.visible = true;
+    // Baseline for the anchor sanity guard: the anchor is created at exactly this pose.
+    goodAnchorPos.copy(arRoot.position); goodAnchorQuat.copy(arRoot.quaternion);
+    haveGoodAnchor = true; anchorRejects = 0;
     arRoot.updateMatrixWorld(true);
     placed = true;
     pendingPlace = false;
@@ -780,6 +834,7 @@ window.BodyAR = !window.THREE ? null : (() => {
 
   function resetPlacementState() {
     placed = false; sel = -1; hasPose = false; pendingPlace = false; lastPlaceTap = -Infinity;
+    haveGoodAnchor = false; anchorRejects = 0; anchorLog = []; trackingOK = false; pendingFocus = -1;
   }
 
   // Hit-test is a cosmetic bonus: requested in the background, any failure is ignored.
@@ -863,6 +918,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       // Simulate what an XR frame delivers: a viewer pose (or null = tracking hiccup),
       // then run the same per-frame retry the real loop runs.
       frame(pose) {
+        trackingOK = !!pose;
         if (pose) setViewerPose(pose.position, pose.orientation); else hasPose = false;
         if (pendingPlace && hasPose) doPlace(pendingMode);
       },
@@ -881,6 +937,8 @@ window.BodyAR = !window.THREE ? null : (() => {
         return { height: box.max.y - box.min.y, minY: box.min.y, maxY: box.max.y };
       },
       setAnchor(a) { anchor = a; },
+      get anchorLog() { return anchorLog.slice(); },
+      get anchorActive() { return !!anchor; },
       get state() {
         return { placed, pendingPlace, hasPose, arRoot, rig, focusedIdx, focusAnimating: !!focusAnim, camVFovDeg: THREE.MathUtils.radToDeg(camVFov),
           bodyInArRoot: !!(arRoot && I && rig && I.body.parent === rig && rig.parent === arRoot) };
