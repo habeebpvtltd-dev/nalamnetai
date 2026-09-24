@@ -1,7 +1,9 @@
 /* ar.js — "View in your room": WebXR immersive-ar on top of the SAME three.js
    scene used by the 3D viewer (same body, materials and markers).
-   - Session requested by hand (no ARButton): hit-test required, dom-overlay optional.
-   - Ring reticle from hit-test, tap to place (faces the user), Table/Life size, Move, Exit.
+   - Session requested by hand (no ARButton): hit-test and dom-overlay both OPTIONAL.
+   - Placement never depends on hit-test: "Tap to place body" puts the body 1.2 m in
+     front of / 0.9 m below the viewer, facing them (retries next frame if no pose).
+     The hit-test reticle is cosmetic only. Table/Life size, Move, Exit.
    - Canvas-sprite labels, tap-to-pick markers from the XR select ray, finding card in the overlay.
    Any failure ends the session and returns to the normal 3D view. */
 
@@ -19,9 +21,15 @@ window.BodyAR = !window.THREE ? null : (() => {
   let items = [], report = null;
   let blendSaved = [], labelSprites = [];
   let cleaning = false, failed = false, overlayBound = false;
+  // Latest viewer pose, refreshed every XR frame. hasPose=false until a frame
+  // delivers a pose (or after a tracking hiccup returns null).
   const viewerPos = new THREE.Vector3();
   const viewerQuat = new THREE.Quaternion();
-  let sessionStartAt = 0;
+  let hasPose = false;
+  let pendingPlace = false;       // tap arrived with no pose -> place on the next frame that has one
+  let lastPlaceTap = -Infinity;   // debounce for the place/move buttons
+  const PLACE_DEBOUNCE_MS = 400;
+  const PLACE_DIST = 1.2, PLACE_DROP = 0.9;   // metres in front / below the viewer's eyes
   const t0 = performance.now();
 
   /* ---------- support check ---------- */
@@ -160,10 +168,9 @@ window.BodyAR = !window.THREE ? null : (() => {
           <button data-size="life" class="${size === "life" ? "active" : ""}">Life size</button>
         </div>
       </div>
-      </div>
       ${banner}
-      <button id="ar-place-btn" class="ar-btn primary" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:24px;padding:20px 30px;box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:16px;">Tap anywhere to place</button>
-      <div class="ar-hint" id="ar-hint"></div>
+      <button id="ar-place-btn" class="ar-place-btn" type="button">Tap to place body</button>
+      <div class="ar-hint" id="ar-hint" hidden></div>
       ${ window.location.search.includes('ardebug=1') ? '<div id="ar-debug" style="position:absolute;top:100px;left:20px;color:lime;font-size:18px;font-weight:bold;z-index:9999;text-shadow: 1px 1px 2px black;">hits: 0</div>' : '' }
       <div class="ar-bottom">
         <div class="ar-card" id="ar-card" hidden></div>
@@ -177,16 +184,11 @@ window.BodyAR = !window.THREE ? null : (() => {
   function bindOverlay() {
     $("ar-exit").onclick = exit;
     $("ar-overlay").querySelectorAll(".ar-seg button").forEach((b) => (b.onclick = () => setSize(b.dataset.size)));
-    $("ar-move").onclick = () => { placed = false; arRoot.visible = false; hideCard(); sessionStartAt = performance.now(); updateHint(); };
+    // Placement is driven ONLY by these real DOM buttons (never by hit-test or screen taps).
+    $("ar-place-btn").onclick = requestPlace;
+    $("ar-move").onclick = () => { hideCard(); requestPlace(); };
     const nx = $("ar-next");
     if (nx) nx.onclick = () => select(items.length ? (sel + 1 + items.length) % items.length : -1);
-    const pb = $("ar-place-btn");
-    if (pb) pb.onclick = () => {
-      if (!placed) {
-        if (reticle.visible) place();
-        else placeInstant();
-      }
-    };
   }
 
   function updateHint() {
@@ -195,8 +197,8 @@ window.BodyAR = !window.THREE ? null : (() => {
     $("ar-actions").hidden = !placed;
     const btn = $("ar-place-btn");
     if (btn) btn.hidden = placed;
-    if (!placed) { h.hidden = true; }
-    else if (items.length && sel < 0) { h.hidden = false; h.textContent = "Tap a glowing spot to learn more"; }
+    if (placed && items.length && sel < 0) { h.hidden = false; h.textContent = "Tap a glowing spot to learn more"; }
+    else if (!placed && pendingPlace) { h.hidden = false; h.textContent = "Finding your position…"; }
     else h.hidden = true;
   }
 
@@ -261,41 +263,29 @@ window.BodyAR = !window.THREE ? null : (() => {
 
   /* ---------- XR loop ---------- */
   function onXRFrame(time, frame) {
-    try {
-      if (!frame || !session) return;
-      const pose = frame.getViewerPose(refSpace);
-      if (pose) { 
-        const p = pose.transform.position; 
-        viewerPos.set(p.x, p.y, p.z); 
-        viewerQuat.set(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w);
-      }
-      
-      if (hitSource) {
-        const hits = frame.getHitTestResults(hitSource);
-        if (window.location.search.includes("ardebug=1")) {
-            const dbg = $("ar-debug");
-            if (dbg) dbg.textContent = `hits: ${hits.length}`;
-        }
-        const was = reticle.visible;
-        if (!placed && hits.length) {
-          const hp = hits[0].getPose(refSpace);
-          if (hp) { reticle.matrix.fromArray(hp.transform.matrix); reticle.visible = true; }
-          else { reticle.visible = false; }
-        } else {
-          reticle.visible = false;
-        }
-        if (was !== reticle.visible) updateHint();
-      } else {
-        reticle.visible = false;
-      }
-      
-      if (!placed && performance.now() - sessionStartAt > 2500) {
-         if (!reticle.visible) {
-            placeInstant();
-         }
-      }
+    if (!frame || !session) return;
 
-      // Markers pulse brighter in AR.
+    // 1) Viewer pose (drives placement). A null pose is a tracking hiccup: keep going.
+    try {
+      const pose = frame.getViewerPose(refSpace);
+      if (pose) {
+        const p = pose.transform.position, o = pose.transform.orientation;
+        setViewerPose(p, o);
+      } else {
+        hasPose = false;
+      }
+    } catch (e) {
+      hasPose = false;
+    }
+
+    // 2) A tap that arrived without a pose is retried here, every frame, until one arrives.
+    if (pendingPlace && hasPose) placeInFront();
+
+    // 3) Hit-test: cosmetic reticle only. Never gates placement; errors are swallowed.
+    updateReticle(frame);
+
+    // 4) Animate + render.
+    try {
       const t = (performance.now() - t0) / 1000;
       I.markers.forEach((m) => {
         const k = m.sel ? 1.8 : 1.25;
@@ -312,13 +302,34 @@ window.BodyAR = !window.THREE ? null : (() => {
     }
   }
 
+  function setViewerPose(p, o) {
+    viewerPos.set(p.x, p.y, p.z);
+    viewerQuat.set(o.x, o.y, o.z, o.w);
+    hasPose = true;
+  }
+
+  function updateReticle(frame) {
+    if (!reticle) return;
+    try {
+      if (placed || !hitSource) { reticle.visible = false; return; }
+      const hits = frame.getHitTestResults(hitSource);
+      const dbg = $("ar-debug");
+      if (dbg) dbg.textContent = `hits: ${hits.length}`;
+      const hp = hits.length ? hits[0].getPose(refSpace) : null;
+      if (hp) { reticle.matrix.fromArray(hp.transform.matrix); reticle.visible = true; }
+      else reticle.visible = false;
+    } catch (e) {
+      // Hit-test is optional: disable it quietly and carry on.
+      reticle.visible = false;
+      try { hitSource && hitSource.cancel(); } catch (x) {}
+      hitSource = null;
+    }
+  }
+
+  // Screen taps only pick markers after placement. They never place the body.
   function onSelect(ev) {
     try {
-      if (!placed) {
-        if (reticle.visible) place();
-        else placeInstant();
-        return;
-      }
+      if (!placed) return;
       const pose = ev.frame && ev.frame.getPose(ev.inputSource.targetRaySpace, refSpace);
       if (!pose) return;
       const o = pose.transform.position, q = pose.transform.orientation;
@@ -339,33 +350,41 @@ window.BodyAR = !window.THREE ? null : (() => {
     }
   }
 
-  function place() {
-    const pos = new THREE.Vector3(), quat = new THREE.Quaternion(), scl = new THREE.Vector3();
-    reticle.matrix.decompose(pos, quat, scl);
-    arRoot.position.copy(pos);
-    // Face the user: the body's front (+Z) points at the viewer, yaw only.
-    arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
-    arRoot.scale.setScalar(SCALE[size]);
-    arRoot.visible = true;
-    placed = true;
-    reticle.visible = false;
+  /* ---------- placement (never depends on hit-test) ---------- */
+  // Called by the "Tap to place body" and "Move" buttons.
+  function requestPlace() {
+    const now = performance.now();
+    if (now - lastPlaceTap < PLACE_DEBOUNCE_MS) return false;   // shaky double-tap
+    lastPlaceTap = now;
+    if (!arRoot) return false;
+    if (hasPose) return placeInFront();
+    // No pose right now (tracking hiccup / first frame): the XR loop retries every frame.
+    pendingPlace = true;
     updateHint();
+    return false;
   }
 
-  function placeInstant() {
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(viewerQuat);
-    fwd.y = 0;
-    fwd.normalize();
-    const pos = new THREE.Vector3().copy(viewerPos).add(fwd.multiplyScalar(1.2));
-    pos.y = viewerPos.y - 0.9;
-    
+  // 1.2 m in front of the viewer along their horizontal heading, 0.9 m below eye level,
+  // turned to face the viewer. Uses yaw only, so it works even when the phone points
+  // straight down at a table (where a flattened forward vector would be ~zero).
+  function placeInFront() {
+    const yaw = new THREE.Euler().setFromQuaternion(viewerQuat, "YXZ").y;
+    const fwdX = -Math.sin(yaw), fwdZ = -Math.cos(yaw);
+    const pos = new THREE.Vector3(
+      viewerPos.x + fwdX * PLACE_DIST,
+      viewerPos.y - PLACE_DROP,
+      viewerPos.z + fwdZ * PLACE_DIST
+    );
     arRoot.position.copy(pos);
     arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
     arRoot.scale.setScalar(SCALE[size]);
     arRoot.visible = true;
+    arRoot.updateMatrixWorld(true);
     placed = true;
-    reticle.visible = false;
+    pendingPlace = false;
+    if (reticle) reticle.visible = false;
     updateHint();
+    return true;
   }
 
   /* ---------- enter / exit ---------- */
@@ -414,7 +433,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       ov.innerHTML = "";
       document.documentElement.classList.remove("in-ar");
       session = null; arRoot = null; reticle = null; refSpace = null;
-      placed = false; sel = -1;
+      resetPlacementState();
       cleaning = false;
       window.BodyUI && BodyUI.afterAR && BodyUI.afterAR();
     }
@@ -435,21 +454,38 @@ window.BodyAR = !window.THREE ? null : (() => {
     try { session.end().catch(() => cleanup()); } catch (e) { cleanup(); }
   }
 
+  function resetPlacementState() {
+    placed = false; sel = -1; hasPose = false; pendingPlace = false; lastPlaceTap = -Infinity;
+  }
+
+  // Hit-test is a cosmetic bonus: requested in the background, any failure is ignored.
+  async function startHitTest(s) {
+    try {
+      if (!s.requestHitTestSource) return;
+      const viewer = await s.requestReferenceSpace("viewer");
+      const src = await s.requestHitTestSource({ space: viewer });
+      if (session === s) hitSource = src; else { try { src.cancel(); } catch (e) {} }
+    } catch (e) {
+      console.info("Hit-test unavailable; placement still works without it.", e);
+      hitSource = null;
+    }
+  }
+
   /* Must be called directly from a tap (user activation) — requestSession comes first. */
   async function start({ items: its, report: rep } = {}) {
     if (session) return;
     I = Body3D._internals();
     if (!I || !navigator.xr) { toast("AR is not available on this phone"); return; }
-    items = its || []; report = rep || null; sel = -1; placed = false; size = "table"; failed = false;
-    sessionStartAt = performance.now();
+    items = its || []; report = rep || null; size = "table"; failed = false;
+    resetPlacementState();
     const ov = $("ar-overlay");
     ov.innerHTML = overlayHtml();
     ov.hidden = false;
     let s;
     try {
       s = await navigator.xr.requestSession("immersive-ar", {
-        requiredFeatures: ["hit-test"],
-        optionalFeatures: ["dom-overlay"],
+        // hit-test is OPTIONAL: phones without it still get AR with button placement.
+        optionalFeatures: ["hit-test", "dom-overlay"],
         domOverlay: { root: ov },
       });
     } catch (e) {
@@ -475,12 +511,14 @@ window.BodyAR = !window.THREE ? null : (() => {
       s.addEventListener("end", cleanup);
       await r.xr.setSession(s);
       refSpace = r.xr.getReferenceSpace();
-      const viewer = await s.requestReferenceSpace("viewer");
-      hitSource = await s.requestHitTestSource({ space: viewer });
       s.addEventListener("select", onSelect);
       enterScene();
       updateHint();
       r.setAnimationLoop(onXRFrame);
+      // No dom-overlay on this phone = no buttons can be shown, so place the body
+      // automatically in front of the viewer as soon as a pose arrives.
+      if (!s.domOverlayState) pendingPlace = true;
+      startHitTest(s); // not awaited: never blocks or gates placement
     } catch (e) {
       fail(e);
     }
@@ -490,16 +528,20 @@ window.BodyAR = !window.THREE ? null : (() => {
     isSupported, start, exit, get active() { return !!session; },
     // Dev/test only: stage the AR scene + overlay inside the normal 3D canvas (no XR device needed).
     _dev: {
-      stage({ items: its = [], report: rep = null, size: sz = "life" } = {}) {
-        I = Body3D._internals(); items = its; report = rep; size = sz; sel = -1;
-        sessionStartAt = performance.now();
+      stage({ items: its = [], report: rep = null, size: sz = "table" } = {}) {
+        I = Body3D._internals(); items = its; report = rep; size = sz;
+        resetPlacementState();
         const ov = $("ar-overlay"); ov.innerHTML = overlayHtml(); ov.hidden = false; bindOverlay();
-        enterScene(); placed = false; updateHint();
-        // Simulate hit test debug for testing
-        if (window.location.search.includes("ardebug=1")) {
-            const dbg = $("ar-debug");
-            if (dbg) dbg.textContent = `hits: 0 (simulated)`;
-        }
+        enterScene(); updateHint();
+      },
+      // Simulate what an XR frame delivers: a viewer pose (or null = tracking hiccup),
+      // then run the same per-frame retry the real loop runs.
+      frame(pose) {
+        if (pose) setViewerPose(pose.position, pose.orientation); else hasPose = false;
+        if (pendingPlace && hasPose) placeInFront();
+      },
+      get state() {
+        return { placed, pendingPlace, hasPose, arRoot, bodyInArRoot: !!(arRoot && I && I.body.parent === arRoot) };
       },
       select: (i) => select(i),
       unstage: () => cleanup(),

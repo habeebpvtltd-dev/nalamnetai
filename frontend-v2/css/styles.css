@@ -557,3 +557,12 @@ details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; alig
 .ar-x { width: 44px; height: 44px; flex: none; border-radius: 12px; border: 1px solid var(--border-2); background: transparent; color: var(--text); font-size: 18px; }
 .ar-loc { font-size: 17px; font-weight: 600; margin-bottom: 10px; }
 .ar-exp { font-size: 17px; line-height: 1.5; padding: 12px 14px; border-radius: 14px; background: rgba(3, 8, 20, .6); border: 1px solid var(--border); }
+/* "Tap to place body": shown the moment AR starts, never gated by hit-test. */
+.ar-place-btn {
+  position: absolute; left: 50%; bottom: calc(18% + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%);
+  min-height: 64px; min-width: 240px; padding: 0 28px; border-radius: 20px; border: 0;
+  background: var(--grad); color: #04121f; font-weight: 800; font-size: 20px;
+  box-shadow: 0 10px 34px rgba(0, 0, 0, .55), 0 0 0 1px rgba(45, 212, 191, .4);
+  pointer-events: auto; z-index: 2; touch-action: manipulation;
+}
+.ar-place-btn:active { transform: translateX(-50%) scale(.97); }
