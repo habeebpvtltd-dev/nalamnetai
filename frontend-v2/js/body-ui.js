@@ -134,14 +134,14 @@ window.BodyUI = (() => {
     const el = $("body-banner");
     const r = report || {};
     if (r.is_critical) {
-      const contact = store.get("contact");
+      const contact = (store.get("contact") || "").replace(/[^\d+]/g, "");
       el.innerHTML = `
         <div class="body-banner banner-critical">
           <div class="row">
             <div style="flex:1">Your report mentions a finding the doctor may need to see soon. <strong>Please contact your doctor today.</strong></div>
             ${contact
               ? `<a class="btn btn-danger" href="tel:${escHtml(contact)}" aria-label="Call emergency contact">📞 Call</a>`
-              : `<button class="btn btn-danger" id="banner-setup">📞 Add</button>`}
+              : `<button class="btn btn-danger" id="banner-setup">📞 Add contact</button>`}
           </div>
         </div>`;
       const b = $("banner-setup");

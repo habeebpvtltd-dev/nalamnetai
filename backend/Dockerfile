@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy application code
 COPY app/ app/
+COPY tests/ tests/
 
 # Use PORT env var provided by Render; default 8000 for local docker runs
 CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}

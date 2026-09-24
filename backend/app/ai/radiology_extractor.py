@@ -208,9 +208,7 @@ Respond ONLY with a single JSON object matching this exact schema:
     "impression": 0.0-1.0
   }}
 }}
-
-Radiology report text:
-{text}
+}}
 """
 
 _TRANSLATE_PROMPT_TEMPLATE = """Explain the MEANING of this medical finding in simple spoken Tamil, as a caring family member would explain to an elderly person. Do NOT translate word by word. Do NOT write English words in Tamil letters (no மீடியல், போஸ்டீரியர், ஃப்ளூயிட், ஹெர்னியேஷன்). Only these may stay in English: vertebra levels like L4-L5, medicine names, and numbers. Leave out imaging jargon like 'signal' or 'intensity' completely. Use the glossary terms naturally inside sentences, not pasted as-is.
@@ -239,40 +237,88 @@ def extract_radiology_fields(text: str) -> dict:
     import re
     text = text.replace("Grade |", "Grade I").replace("grade |||", "grade III").replace("grade ||", "grade II")
     # Fix single capital letters stuck to words: Amoderate -> A moderate, A3 cm -> A 3 cm
-    text = re.sub(r'\b([A-Z])([a-z0-9])', r'\1 \2', text)
+    text = re.sub(r'\b(A|I|O)([a-z]{3,}|[0-9]+)', r'\1 \2', text)
 
     prompt = _RADIOLOGY_PROMPT_TEMPLATE.format(
         zone_list=_ZONE_LIST_STR,
-        text=text[:4000],
     )
 
     raw = ""
     try:
         raw = chat(
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text[:4000]}
+            ],
             max_tokens=4096,
+            temperature=0,
             response_format={"type": "json_object"}
         )
         parsed = _parse_json(raw)
     except Exception as e:
         print(f"[RADIOLOGY EXTRACT] Main error: {e}")
-        return {"fields": {}, "confidence": {}}
+        parsed = _rule_based_safety_net(text)
+        
+    if not parsed or not parsed.get("findings"):
+        parsed = _rule_based_safety_net(text)
 
     print(f"[RADIOLOGY EXTRACT] raw keys={list(parsed.keys())}")
 
     confidence_scores = parsed.pop("_confidence", {})
 
-    # Validate body_zone for every finding BEFORE Pydantic validation
+    from difflib import SequenceMatcher
+    def _normalize(s):
+        import re
+        return re.sub(r'\s+', ' ', (s or "").lower()).strip()
+        
+    clauses_for_match = re.split(r'[.;!?\n]', text.lower())
+    rule_parsed = _rule_based_safety_net(text)
+    rule_findings = rule_parsed.get("findings", [])
+
     raw_findings = parsed.get("findings", [])
+    valid_findings = []
     for f in raw_findings:
-        f["body_zone"] = _validate_zone(f.get("body_zone"))
-        if "severity_as_written" in f and isinstance(f["severity_as_written"], str):
-            f["severity_as_written"] = f["severity_as_written"].lower()
-        f["severity_level"] = _map_severity(f.get("severity_as_written", ""), f.get("text_from_report", ""))
+        target = _normalize(f.get("text_from_report", ""))
+        if not target: continue
+        
+        # Grounding check
+        best_ratio = 0.0
+        for clause in clauses_for_match:
+            r = SequenceMatcher(None, target, _normalize(clause)).ratio()
+            if r > best_ratio: best_ratio = r
+            
+        if target in _normalize(text) or best_ratio >= 0.85:
+            # XCheck
+            best_rule_f = None
+            best_r = 0.0
+            for rf in rule_findings:
+                r = SequenceMatcher(None, target, _normalize(rf.get("text_from_report", ""))).ratio()
+                if r > best_r:
+                    best_r = r
+                    best_rule_f = rf
+                    
+            if best_rule_f and best_r >= 0.6:
+                for key in ["body_zone", "side", "location_detail", "severity_level"]:
+                    llm_val = f.get(key)
+                    rule_val = best_rule_f.get(key)
+                    if rule_val and rule_val != "unknown" and rule_val != "not_stated":
+                        if not llm_val or llm_val != rule_val:
+                            print(f"[XCHECK] field={key} llm={llm_val} rule={rule_val}")
+                            f[key] = rule_val
+            
+            f["body_zone"] = _validate_zone(f.get("body_zone"))
+            if "severity_as_written" in f and isinstance(f["severity_as_written"], str):
+                f["severity_as_written"] = f["severity_as_written"].lower()
+            f["severity_level"] = _map_severity(f.get("severity_as_written", ""), f.get("text_from_report", ""))
+            valid_findings.append(f)
+        else:
+            print(f"[GROUNDING] dropped={target}")
+            
+    parsed["findings"] = valid_findings
 
     # 1. Verify English explanations for faithfulness and plain words
     # 2. Tamil generation is deferred to on-demand requests
-    _verify_english_explanations(raw_findings, text)
+    _verify_english_explanations(valid_findings, text)
 
     # Fallback keyword check for is_critical in case LLM missed it.
     # IMPORTANT: negated phrases must NOT trigger is_critical.
@@ -339,6 +385,100 @@ def extract_radiology_fields(text: str) -> dict:
 
     return {"fields": validated.model_dump(), "confidence": confidence_scores}
 
+
+def _rule_based_safety_net(text: str) -> dict:
+    print("[SAFETY-NET] used")
+    import re
+    clauses = re.split(r'[.;!?\n]', text.lower())
+    findings = []
+    fid = 1
+    
+    # Pre-compute critical keywords for negation
+    crit_kws = ["neoplasm", "malignancy", "biopsy", "urgent", "haematoma", "hemorrhage", "haemorrhage", "bleed", "midline shift", "pneumothorax", "spinal fracture", "skull fracture", "suspicious for", "emergency", "immediate"]
+    neg_re = re.compile(r'\b(?:no|not|without|absent|absence\s+of|negative\s+for|no\s+evidence\s+of|no\s+sign\s+of|no\s+signs\s+of|no\s+features?\s+of)\b(?:\s+\S+){0,6}\s*')
+    
+    def is_neg(clause, word):
+        matches = list(re.finditer(r'\b' + re.escape(word), clause))
+        if not matches: return False
+        for m in matches:
+            prefix = clause[:m.start()]
+            negs = list(neg_re.finditer(prefix))
+            if not negs: return False
+            if m.start() - negs[-1].end() > 50: return False
+        return True
+
+    for clause in clauses:
+        clause = clause.strip()
+        if not clause or len(clause) < 5: continue
+        
+        # Check normal descriptors
+        normal_words = ["centrally placed", "normal", "unremarkable", "within normal limits", "intact", "clear", "no abnormality"]
+        is_normal = any(nw in clause for nw in normal_words)
+        
+        # If it's normal and no critical/abnormal words, we can still add it, but usually we care about findings.
+        # Let's derive side
+        side = "not_stated"
+        if "bilateral" in clause or "both" in clause: side = "both"
+        elif "left" in clause: side = "left"
+        elif "right" in clause: side = "right"
+        
+        # Derive zone
+        zone = None
+        if "knee" in clause: zone = f"knee_{side}" if side in ("left", "right") else "knee_left"
+        elif "lung" in clause or "pleural" in clause or "consolidation" in clause or "costophrenic" in clause:
+            zone = f"chest_lung_{side}" if side in ("left", "right") else "chest_lung_left"
+        elif "kidney" in clause or "renal" in clause:
+            zone = f"kidney_{side}" if side in ("left", "right") else "kidney_left"
+        elif "brain" in clause or "cerebral" in clause or "hemorrhage" in clause or "ventricle" in clause:
+            zone = "head_brain"
+        elif "liver" in clause or "hepatic" in clause:
+            zone = "liver"
+        elif "cervical" in clause or re.search(r'\bc\d', clause): zone = "cervical_spine"
+        elif "thoracic" in clause or re.search(r'\bt\d', clause): zone = "thoracic_spine"
+        elif "lumbar" in clause or re.search(r'\bl\d', clause): zone = "lumbar_spine"
+        
+        # Determine severity
+        sev_written = "not_stated"
+        sev_level = "unknown"
+        if "grade iii" in clause or "grade 3" in clause or "complete" in clause or "severe" in clause or "acute" in clause:
+            sev_written = "severe"
+            sev_level = "severe"
+        elif "grade ii" in clause or "grade 2" in clause or "moderate" in clause:
+            sev_written = "moderate"
+            sev_level = "moderate"
+        elif "grade i" in clause or "grade 1" in clause or "mild" in clause:
+            sev_written = "mild"
+            sev_level = "mild"
+            
+        # Add finding if it has a zone and isn't just purely negative
+        # Wait, negation check: if there is a problem word that is negated, it's normal.
+        finding_dict = {
+            "id": f"f{fid}",
+            "text_from_report": clause.capitalize() + ".",
+            "body_zone": zone,
+            "side": side,
+            "severity_as_written": sev_written,
+            "severity_level": sev_level,
+            "is_normal": is_normal,
+            "explanation_en": "",
+            "location_detail": None
+        }
+        finding_dict["location_detail"] = _derive_location_detail(finding_dict)
+        findings.append(finding_dict)
+        fid += 1
+
+    return {
+        "modality": "other",
+        "study_name": None,
+        "study_date": None,
+        "referring_doctor": None,
+        "radiologist": None,
+        "clinical_history": None,
+        "impression": None,
+        "overall_normal": False,
+        "is_critical": False,
+        "findings": findings
+    }
 
 def _faithfulness_check(report_text: str, explanation: str, full_report: str) -> str | None:
     if not report_text:

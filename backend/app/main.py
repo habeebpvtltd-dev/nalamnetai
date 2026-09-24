@@ -11,7 +11,18 @@ from app.models import document  # noqa: registers models before create_all
 
 Base.metadata.create_all(bind=engine)  # creates nalamnet.db + tables on first run
 
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+
 app = FastAPI(title="NalamNet AI", version="0.1.0")
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    print(f"[ERROR] Unhandled exception: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={"error": "An internal server error occurred", "details": str(exc)}
+    )
 
 # CORS: read from env so Render/Vercel can restrict origins in production.
 # Local default keeps all the usual dev origins working without touching .env.

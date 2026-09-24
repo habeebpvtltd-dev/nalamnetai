@@ -151,6 +151,7 @@ Document text:
         raw = chat(
             messages=[{"role": "user", "content": prompt}],
             max_tokens=500,
+            temperature=0,
             response_format={"type": "json_object"}
         )
         parsed = _parse_json(raw)

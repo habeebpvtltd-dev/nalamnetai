@@ -67,7 +67,7 @@ SCHEMA_MAP = {
 }
 
 
-def _build_prompt(document_type: str, text: str, schema: BaseModel) -> str:
+def _build_prompt(document_type: str, schema: BaseModel) -> str:
     schema_json = schema.model_json_schema()
     return f"""Extract structured data from this {document_type} document text.
 Respond with only a JSON object matching this exact schema.
@@ -77,11 +77,7 @@ You MUST respond with ONLY valid JSON matching this exact schema:
 Also include a "_confidence" object with a 0.0-1.0 confidence score for EACH field,
 e.g. "_confidence": {{"amount": 0.95, "due_date": 0.60}}
 
-If a field is not present in the text, set it to null and confidence 0.0.
-
-Document text:
-{text[:3000]}
-"""
+If a field is not present in the text, set it to null and confidence 0.0."""
 
 
 def extract_fields(document_type: str, text: str) -> dict:
@@ -94,12 +90,16 @@ def extract_fields(document_type: str, text: str) -> dict:
     if schema is None:
         return {"fields": {}, "confidence": {}}
 
-    prompt = _build_prompt(document_type, text, schema)
+    sys_prompt = _build_prompt(document_type, schema)
 
     try:
         raw = chat(
-            messages=[{"role": "user", "content": prompt}],
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": text[:3000]}
+            ],
             max_tokens=4096,
+            temperature=0,
             response_format={"type": "json_object"}
         )
         parsed = _parse_json(raw)
@@ -117,6 +117,28 @@ def extract_fields(document_type: str, text: str) -> dict:
         return {"fields": {}, "confidence": {}}
 
     validated_dict = validated.model_dump()
+    
+    if document_type == "prescription" and "medications" in validated_dict:
+        import difflib
+        import re
+        words = re.findall(r'\w+', text.lower())
+        for med in validated_dict["medications"]:
+            name = med.get("name", "")
+            if not name: continue
+            
+            name_words = re.findall(r'\w+', name.lower())
+            n_len = len(name_words)
+            best_r = 0.0
+            if n_len > 0:
+                for i in range(len(words) - n_len + 1):
+                    window = " ".join(words[i:i+n_len])
+                    r = difflib.SequenceMatcher(None, name.lower(), window).ratio()
+                    if r > best_r: best_r = r
+                    if best_r >= 0.8: break
+                    
+            if best_r < 0.8:
+                print(f"[GROUNDING] med dropped confidence: {name}")
+                confidence_scores["medications"] = 0.4
 
     final_fields = {}
     for field_name, value in validated_dict.items():

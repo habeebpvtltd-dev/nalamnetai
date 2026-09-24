@@ -51,8 +51,8 @@ const ZONES = {
   hip_right:           { pos: [-0.1, 0.925, 0.0],   face: [0, 1],  zoom: 1.0 },
   thigh_left:          { pos: [0.095, 0.72, 0],     face: [0, 1],  zoom: 1.05 },
   thigh_right:         { pos: [-0.095, 0.72, 0],    face: [0, 1],  zoom: 1.05 },
-  knee_left:           { pos: [0.1, 0.5, 0.0],      face: [0, 1],  zoom: 0.8,  faceFromDetail: true },
-  knee_right:          { pos: [-0.1, 0.5, 0.0],     face: [0, 1],  zoom: 0.8,  faceFromDetail: true },
+  knee_left:           { pos: [0.1, 0.5, 0.0],      face: [0, 1],  zoom: 1.0,  faceFromDetail: true },
+  knee_right:          { pos: [-0.1, 0.5, 0.0],     face: [0, 1],  zoom: 1.0,  faceFromDetail: true },
   lower_leg_left:      { pos: [0.1, 0.3, 0.0],      face: [0, 1],  zoom: 1.0 },
   lower_leg_right:     { pos: [-0.1, 0.3, 0.0],     face: [0, 1],  zoom: 1.0 },
   ankle_foot_left:     { pos: [0.1, 0.06, 0.03],    face: [0, 1],  zoom: 0.85 },
@@ -113,16 +113,19 @@ const SPINE_ZONES = ["cervical_spine", "thoracic_spine", "lumbar_spine", "sacrum
    --------------------------------------------------------------------- */
 function sideSign(side) { return side === "left" ? 1 : side === "right" ? -1 : 0; }
 
+const MIDLINE_ZONES = ["cervical_spine", "thoracic_spine", "lumbar_spine", "sacrum_coccyx", "neck", "thyroid", "bladder", "pancreas", "abdomen_general", "stomach_intestines", "pelvis_reproductive", "face_sinuses"];
 function resolveSide(finding, zoneId) {
   const s = finding.side;
   if (s === "left" || s === "right" || s === "both") return s;
   if (/_left$/.test(zoneId)) return "left";
   if (/_right$/.test(zoneId)) return "right";
+  if (MIDLINE_ZONES.includes(zoneId)) return "not_applicable";
   return s || "not_stated";
 }
 
 function parseDetail(finding, zoneId) {
-  const primary = (finding.location_detail || "").toString();
+  let primary = (finding.location_detail || "").toString().trim();
+  if (/^(not[_ ]?stated|null|none|n\/?a|unknown|mid)$/i.test(primary)) primary = "";
   const text = (primary + " " + (primary ? "" : (finding.text_from_report || "") + " " + (finding.explanation_en || "")))
     .toLowerCase().replace(/_/g, " ");
   const d = { kind: null };
@@ -136,7 +139,10 @@ function parseDetail(finding, zoneId) {
       const b = (pair[3] ? pair[3].toUpperCase() : pair[1].toUpperCase()) + pair[4];
       if (SPINE_LEVELS[a] && SPINE_LEVELS[b]) return { kind: "spine", levels: [a, b] };
     }
-    const single = src.match(/\b([CLS])\s?(\d{1,2})\b/) || src.match(/\bT\s?(\d{1,2})\s+vertebra/i);
+    // "T2" alone is usually an MRI sequence name, so in free text only trust C/L/S
+    // (or "T12 vertebra"); a structured location_detail may use any letter.
+    const single = (primary ? src.match(/\b([CTLS])\s?(\d{1,2})\b/i) : null)
+      || src.match(/\b([CLS])\s?(\d{1,2})\b/) || src.match(/\bT\s?(\d{1,2})\s+vertebra/i);
     if (single) {
       const lv = single.length === 3 ? single[1].toUpperCase() + single[2] : "T" + single[1];
       if (SPINE_LEVELS[lv]) return { kind: "spine", levels: [lv] };
@@ -269,7 +275,8 @@ function shortDetail(detail) {
 }
 
 function sideLabel(side) {
-  return side === "left" ? "Patient's left" : side === "right" ? "Patient's right" : side === "both" ? "Both sides" : "Side not stated";
+  return side === "left" ? "Patient's left" : side === "right" ? "Patient's right" : side === "both" ? "Both sides"
+    : side === "not_applicable" ? "Middle of the body" : "Side not stated";
 }
 
 /* =====================================================================
@@ -492,7 +499,9 @@ const Body3D = (() => {
       if (!item.placement) return;
       let p = item.placement.pos.slice();
       // nudge apart markers that sit on the same spot
-      placed.forEach((q) => { if (Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 0.012) p[1] += 0.022; });
+      let dup = 0;
+      placed.forEach((q) => { if (Math.hypot(q[0] - p[0], q[1] - p[1], q[2] - p[2]) < 0.012) dup++; });
+      if (dup) p[0] += (dup % 2 ? 1 : -1) * Math.ceil(dup / 2) * 0.02;
       placed.push(p);
       item.placement.pos = p;
       const color = SEVERITY_COLORS[item.severity] ?? SEVERITY_COLORS.unknown;
@@ -504,7 +513,8 @@ const Body3D = (() => {
       const label = document.createElement("div");
       label.className = "mlabel";
       label.style.color = "#" + new THREE.Color(color).getHexString();
-      label.innerHTML = `<b><span class="sw"></span><span style="color:var(--text)">${escHtml(item.zone_en)}</span></b><small>${escHtml(sideLabel(item.side))}${item.short ? " · " + escHtml(item.short) : ""}</small>`;
+      const shortName = item.short || item.zone_en;
+      label.innerHTML = `<b><span class="sw"></span><span style="color:var(--text)"><span class="full">${escHtml(item.zone_en)}</span><span class="brief">${escHtml(shortName)}</span></span></b><small>${escHtml(sideLabel(item.side))}${item.short ? " · " + escHtml(item.short) : ""}</small>`;
       label.addEventListener("click", (e) => { e.stopPropagation(); onSelectCb(idx); });
       labelHost.appendChild(label);
       m.label = label;
@@ -517,6 +527,7 @@ const Body3D = (() => {
       m.sel = m.index === idx;
       m.label.classList.toggle("sel", m.sel);
       m.label.classList.toggle("dim", idx != null && !m.sel);
+      m.lw = 0; // width changes with the compact/full style
     });
   }
 
@@ -711,10 +722,31 @@ const Body3D = (() => {
       // flip label to the left if it would overflow the right edge
       if (!m.lw) m.lw = m.label.offsetWidth;
       const lw = m.lw || 120;
-      const left = x + offX + lw > w - 70 ? x - offX - lw : x + offX;
+      let left = x + offX + lw > w - 70 ? x - offX - lw : x + offX;
+      left = Math.max(4, Math.min(w - lw - 4, left));
+      m.lp = { x: left, y: y + offY };
       m.label.style.transform = `translate(${left.toFixed(1)}px, ${(y - 16 + offY).toFixed(1)}px)`;
       m.label.classList.toggle("flip", left < x);
     }
+  }
+
+  // Push overlapping finding labels apart vertically (selected label wins its spot).
+  function declutter() {
+    const vis = markers.filter((m) => m.lp && m.label.style.display !== "none");
+    if (vis.length < 2) return;
+    vis.sort((a, b) => (b.sel - a.sel) || (a.lp.y - b.lp.y));
+    const placed = [];
+    vis.forEach((m) => {
+      const h = m.sel ? 46 : 32;
+      let y = m.lp.y;
+      for (let k = 0; k < 8; k++) {
+        const hit = placed.find((p) => Math.abs(p.y - y) < (p.h + h) / 2 + 2 && p.x < m.lp.x + m.lw && m.lp.x < p.x + p.w);
+        if (!hit) break;
+        y = hit.y + (hit.h + h) / 2 + 3;
+      }
+      placed.push({ x: m.lp.x, y, w: m.lw || 120, h });
+      if (y !== m.lp.y) m.label.style.transform = `translate(${m.lp.x.toFixed(1)}px, ${(y - 16).toFixed(1)}px)`;
+    });
   }
 
   function frame() {
@@ -732,6 +764,7 @@ const Body3D = (() => {
     });
     renderer.render(scene, camera);
     markers.forEach((m) => projectLabel(m));
+    declutter();
     debugPts.forEach((m) => projectLabel(m, 6, 0));
   }
 
@@ -785,5 +818,6 @@ const Body3D = (() => {
     setInsets, get cam() { return cam; }, get ready() { return ready; },
     faceFront: () => resetView({ yaw: 0 }),
     faceBack: () => resetView({ yaw: Math.PI }),
+    get shellColor() { return shellMat && shellMat.uniforms.uColor.value.getHexString(); },
   };
 })();

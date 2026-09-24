@@ -56,7 +56,10 @@ const App = (() => {
     try { history.replaceState(null, "", `${location.pathname}${location.search}#${name}`); } catch (e) {}
   }
 
+  let booted = false;
   function boot() {
+    if (booted) return;
+    booted = true;
     document.querySelectorAll(".tab").forEach((t) =>
       t.addEventListener("click", () => {
         // A tap is a user gesture: unlock audio so later async TTS can play on phones.

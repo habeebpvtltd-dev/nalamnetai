@@ -266,6 +266,11 @@ button { cursor: pointer; }
 .scan-status-title { font-weight: 700; font-size: 18px; }
 .scan-status-sub { color: var(--text-2); font-size: 16px; }
 
+.how { display: grid; gap: 14px; }
+.how-step { display: flex; gap: 14px; align-items: flex-start; }
+.how-step span { color: var(--text-2); font-size: 16px; }
+.how-n { flex: none; width: 34px; height: 34px; border-radius: 12px; display: flex; align-items: center; justify-content: center; font-weight: 800; background: var(--grad); color: #04121f !important; font-size: 16px !important; }
+
 /* Result cards */
 .result { padding: 20px; margin-bottom: 16px; }
 .result-head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
@@ -315,7 +320,8 @@ button { cursor: pointer; }
 /* =====================================================================
    BODY 3D
    ===================================================================== */
-.body-wrap { position: absolute; inset: 0; overflow: hidden; touch-action: none; }
+.body-wrap { position: absolute; inset: 0; overflow: hidden; }
+.body-canvas-host { touch-action: none; }
 .body-canvas-host { position: absolute; inset: 0; }
 .body-canvas-host canvas { display: block; width: 100%; height: 100%; touch-action: none; outline: none; }
 .body-labels { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
@@ -330,7 +336,11 @@ button { cursor: pointer; }
 .mlabel small { color: var(--text-2); font-size: 12.5px; }
 .mlabel.sel { border-color: currentColor; box-shadow: 0 0 18px -4px currentColor; }
 .mlabel .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: currentColor; }
-.mlabel.dim { opacity: .55; }
+.mlabel.dim { opacity: .7; }
+.mlabel .brief { display: none; }
+.mlabel.dim .brief { display: inline; }
+.mlabel.dim .full, .mlabel.dim small { display: none; }
+.mlabel.dim { padding: 4px 9px; font-size: 13px; }
 .mlabel.debug { padding: 1px 5px; font-size: 10px; border-radius: 6px; background: rgba(0, 0, 0, .7); pointer-events: none; }
 .mlabel.debug::before { display: none; }
 .mlabel.debug.detail { color: #f0abfc; border-color: rgba(240, 171, 252, .5); }
@@ -367,12 +377,13 @@ button { cursor: pointer; }
 .sheet.collapsed .sheet-body > :not(.sheet-peek) { display: none; }
 .sheet-handle { flex: none; height: 26px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
 .sheet-handle span { width: 44px; height: 5px; border-radius: 3px; background: var(--border-2); }
-.sheet-body { overflow-y: auto; padding: 0 16px 16px; overscroll-behavior: contain; }
+.sheet-body { overflow-y: auto; padding: 0 16px 16px; overscroll-behavior: contain; touch-action: pan-y; }
 .sheet-peek { display: flex; align-items: center; gap: 10px; }
 .sheet-peek .count { flex: 1; font-size: 15px; color: var(--text-2); font-weight: 600; }
 .nav-btn { min-height: 48px; min-width: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text); font-weight: 700; font-size: 16px; display: inline-flex; align-items: center; gap: 6px; }
 .nav-btn.primary { background: var(--grad); color: #04121f; border-color: transparent; }
 .nav-btn svg { width: 20px; height: 20px; }
+.nav-btn[disabled] { opacity: .35; pointer-events: none; }
 .f-title { font-size: 25px; font-weight: 800; line-height: 1.15; margin-top: 12px; letter-spacing: -.01em; }
 .f-title-ta { font-family: var(--font-ta); font-size: 18px; color: var(--text-2); margin-top: 2px; }
 .f-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
@@ -473,3 +484,15 @@ details.f-quote summary { cursor: pointer; min-height: 40px; display: flex; alig
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+/* Performance: over the live WebGL canvas, blur is costly on mid-range Android
+   GPUs (re-composited every frame). Use opaque glass there instead. */
+.body-wrap .glass-strong, .body-wrap .icon-btn, .body-wrap .mlabel,
+.body-wrap .banner-critical, .body-wrap .banner-ok, .body-wrap .banner-info {
+  backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+.body-wrap .glass-strong { background: linear-gradient(180deg, rgba(13, 27, 56, .94), rgba(8, 18, 40, .94)); }
+.body-wrap .icon-btn { background: rgba(10, 22, 48, .9); }
+.body-wrap .mlabel { background: rgba(5, 11, 26, .88); }
+.body-wrap .banner-critical { background: rgba(60, 10, 18, .95); }
+.body-wrap .banner-ok { background: rgba(6, 44, 34, .94); }

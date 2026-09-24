@@ -19,6 +19,7 @@ class Document(Base):
     __tablename__ = "documents"
 
     id = Column(String, primary_key=True, default=_uuid)
+    file_hash = Column(String, index=True, nullable=True)
     document_type = Column(String, default="unclassified")
     extracted_text = Column(Text, nullable=True)
     status = Column(String, default="uploaded")

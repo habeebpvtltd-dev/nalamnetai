@@ -7,6 +7,7 @@ import io
 import json
 import uuid
 import base64
+import hashlib
 import qrcode
 import groq
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Request
@@ -112,6 +113,39 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
     directly on the main event loop and block everything else.
     """    
     file_bytes = file.file.read()
+    if not file_bytes:
+        return JSONResponse(status_code=400, content={"error": "Empty file provided"})
+    
+    file_hash = hashlib.sha256(file_bytes).hexdigest()
+    
+    # Check cache
+    existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
+    if existing_doc:
+        print("[CACHE] hit")
+        
+        doc_type = existing_doc.document_type
+        try:
+            fields = json.loads(existing_doc.extracted_text) if existing_doc.extracted_text else {}
+        except Exception:
+            fields = {}
+            
+        # We need to construct the result with confidence scores
+        entities = db.query(ExtractedEntity).filter(ExtractedEntity.document_id == existing_doc.id).all()
+        confidence = {e.field_name: e.confidence_score for e in entities}
+        
+        response_payload = {
+            "document_id": existing_doc.id,
+            "object_type": doc_type,
+            "classification_confidence": 1.0,
+            "fields": fields,
+            "field_confidence": confidence,
+            "handwritten": False,
+        }
+        if doc_type == "radiology_report":
+            response_payload["radiology"] = _build_radiology_viewer(existing_doc.id, fields)
+            
+        return response_payload
+
     filename = (file.filename or "").lower()
     is_pdf = filename.endswith(".pdf") or file.content_type == "application/pdf"
 
@@ -263,7 +297,7 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
         raw_text_to_store = json.dumps(radiology_fields, ensure_ascii=False)
     else:
         raw_text_to_store = raw_text
-    document = Document(document_type=doc_type, extracted_text=raw_text_to_store, status="needs_review")
+    document = Document(file_hash=file_hash, document_type=doc_type, extracted_text=raw_text_to_store, status="needs_review")
     db.add(document)
     db.flush()
 
