@@ -20,6 +20,8 @@ window.BodyAR = !window.THREE ? null : (() => {
   let blendSaved = [], labelSprites = [];
   let cleaning = false, failed = false, overlayBound = false;
   const viewerPos = new THREE.Vector3();
+  const viewerQuat = new THREE.Quaternion();
+  let sessionStartAt = 0;
   const t0 = performance.now();
 
   /* ---------- support check ---------- */
@@ -158,8 +160,11 @@ window.BodyAR = !window.THREE ? null : (() => {
           <button data-size="life" class="${size === "life" ? "active" : ""}">Life size</button>
         </div>
       </div>
+      </div>
       ${banner}
+      <button id="ar-place-btn" class="ar-btn primary" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);font-size:24px;padding:20px 30px;box-shadow:0 8px 32px rgba(0,0,0,0.5);border-radius:16px;">Tap anywhere to place</button>
       <div class="ar-hint" id="ar-hint"></div>
+      ${ window.location.search.includes('ardebug=1') ? '<div id="ar-debug" style="position:absolute;top:100px;left:20px;color:lime;font-size:18px;font-weight:bold;z-index:9999;text-shadow: 1px 1px 2px black;">hits: 0</div>' : '' }
       <div class="ar-bottom">
         <div class="ar-card" id="ar-card" hidden></div>
         <div class="ar-actions" id="ar-actions" hidden>
@@ -172,16 +177,25 @@ window.BodyAR = !window.THREE ? null : (() => {
   function bindOverlay() {
     $("ar-exit").onclick = exit;
     $("ar-overlay").querySelectorAll(".ar-seg button").forEach((b) => (b.onclick = () => setSize(b.dataset.size)));
-    $("ar-move").onclick = () => { placed = false; arRoot.visible = false; hideCard(); updateHint(); };
+    $("ar-move").onclick = () => { placed = false; arRoot.visible = false; hideCard(); sessionStartAt = performance.now(); updateHint(); };
     const nx = $("ar-next");
     if (nx) nx.onclick = () => select(items.length ? (sel + 1 + items.length) % items.length : -1);
+    const pb = $("ar-place-btn");
+    if (pb) pb.onclick = () => {
+      if (!placed) {
+        if (reticle.visible) place();
+        else placeInstant();
+      }
+    };
   }
 
   function updateHint() {
     const h = $("ar-hint");
     if (!h) return;
     $("ar-actions").hidden = !placed;
-    if (!placed) { h.hidden = false; h.textContent = reticle && reticle.visible ? "Tap to place the body" : "Point at the floor and tap to place the body"; }
+    const btn = $("ar-place-btn");
+    if (btn) btn.hidden = placed;
+    if (!placed) { h.hidden = true; }
     else if (items.length && sel < 0) { h.hidden = false; h.textContent = "Tap a glowing spot to learn more"; }
     else h.hidden = true;
   }
@@ -250,16 +264,36 @@ window.BodyAR = !window.THREE ? null : (() => {
     try {
       if (!frame || !session) return;
       const pose = frame.getViewerPose(refSpace);
-      if (pose) { const p = pose.transform.position; viewerPos.set(p.x, p.y, p.z); }
-      if (!placed && hitSource) {
+      if (pose) { 
+        const p = pose.transform.position; 
+        viewerPos.set(p.x, p.y, p.z); 
+        viewerQuat.set(pose.transform.orientation.x, pose.transform.orientation.y, pose.transform.orientation.z, pose.transform.orientation.w);
+      }
+      
+      if (hitSource) {
         const hits = frame.getHitTestResults(hitSource);
+        if (window.location.search.includes("ardebug=1")) {
+            const dbg = $("ar-debug");
+            if (dbg) dbg.textContent = `hits: ${hits.length}`;
+        }
         const was = reticle.visible;
-        if (hits.length) {
+        if (!placed && hits.length) {
           const hp = hits[0].getPose(refSpace);
           if (hp) { reticle.matrix.fromArray(hp.transform.matrix); reticle.visible = true; }
-        } else reticle.visible = false;
+          else { reticle.visible = false; }
+        } else {
+          reticle.visible = false;
+        }
         if (was !== reticle.visible) updateHint();
-      } else reticle.visible = false;
+      } else {
+        reticle.visible = false;
+      }
+      
+      if (!placed && performance.now() - sessionStartAt > 2500) {
+         if (!reticle.visible) {
+            placeInstant();
+         }
+      }
 
       // Markers pulse brighter in AR.
       const t = (performance.now() - t0) / 1000;
@@ -281,8 +315,8 @@ window.BodyAR = !window.THREE ? null : (() => {
   function onSelect(ev) {
     try {
       if (!placed) {
-        if (!reticle.visible) return;
-        place();
+        if (reticle.visible) place();
+        else placeInstant();
         return;
       }
       const pose = ev.frame && ev.frame.getPose(ev.inputSource.targetRaySpace, refSpace);
@@ -310,6 +344,22 @@ window.BodyAR = !window.THREE ? null : (() => {
     reticle.matrix.decompose(pos, quat, scl);
     arRoot.position.copy(pos);
     // Face the user: the body's front (+Z) points at the viewer, yaw only.
+    arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
+    arRoot.scale.setScalar(SCALE[size]);
+    arRoot.visible = true;
+    placed = true;
+    reticle.visible = false;
+    updateHint();
+  }
+
+  function placeInstant() {
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(viewerQuat);
+    fwd.y = 0;
+    fwd.normalize();
+    const pos = new THREE.Vector3().copy(viewerPos).add(fwd.multiplyScalar(1.2));
+    pos.y = viewerPos.y - 0.9;
+    
+    arRoot.position.copy(pos);
     arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
     arRoot.scale.setScalar(SCALE[size]);
     arRoot.visible = true;
@@ -391,6 +441,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     I = Body3D._internals();
     if (!I || !navigator.xr) { toast("AR is not available on this phone"); return; }
     items = its || []; report = rep || null; sel = -1; placed = false; size = "table"; failed = false;
+    sessionStartAt = performance.now();
     const ov = $("ar-overlay");
     ov.innerHTML = overlayHtml();
     ov.hidden = false;
@@ -441,8 +492,14 @@ window.BodyAR = !window.THREE ? null : (() => {
     _dev: {
       stage({ items: its = [], report: rep = null, size: sz = "life" } = {}) {
         I = Body3D._internals(); items = its; report = rep; size = sz; sel = -1;
+        sessionStartAt = performance.now();
         const ov = $("ar-overlay"); ov.innerHTML = overlayHtml(); ov.hidden = false; bindOverlay();
-        enterScene(); placed = true; arRoot.visible = true; arRoot.scale.setScalar(SCALE[size]); scaleLabels(); updateHint();
+        enterScene(); placed = false; updateHint();
+        // Simulate hit test debug for testing
+        if (window.location.search.includes("ardebug=1")) {
+            const dbg = $("ar-debug");
+            if (dbg) dbg.textContent = `hits: 0 (simulated)`;
+        }
       },
       select: (i) => select(i),
       unstage: () => cleanup(),
