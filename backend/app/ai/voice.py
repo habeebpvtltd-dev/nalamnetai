@@ -64,7 +64,7 @@ def transcribe(audio_bytes: bytes, mime_type: str = "") -> dict:
             data = {"model": "saaras:v3", "language_code": "unknown", "mode": "transcribe"}
             headers = {"api-subscription-key": SARVAM_API_KEY}
             
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=20.0) as client:
                 for attempt in range(2):
                     try:
                         resp = client.post("https://api.sarvam.ai/speech-to-text", headers=headers, data=data, files=files)
@@ -171,7 +171,7 @@ def synthesize(text: str, language: str = "en") -> dict:
         }
         
         try:
-            with httpx.Client(timeout=60.0) as client:
+            with httpx.Client(timeout=15.0) as client:
                 for chunk in chunks:
                     payload = {
                         "text": chunk,
