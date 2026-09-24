@@ -9,9 +9,20 @@
 
 window.BodyAR = !window.THREE ? null : (() => {
   const $ = (id) => document.getElementById(id);
-  const BODY_H = 1.75;                                  // model height in body units
-  const SCALE = { table: 0.4 / BODY_H, life: 1.7 / BODY_H };
-  const LABEL_W = { table: 0.12, life: 0.32 };          // label width in metres
+  // Target standing heights in metres. The scale is computed from the MEASURED mesh
+  // height on AR entry (see fitModel), so the rendered figure really is this tall.
+  const TARGET_H = { table: 0.38, life: 1.65 };
+  let modelH = 1.75;                                    // refined by fitModel()
+  const SCALE = { table: TARGET_H.table / modelH, life: TARGET_H.life / modelH };
+  const LABEL_W = { table: 0.13, life: 0.32 };          // label width in metres
+  // Markers scale with the body; at table size that makes the core only ~3 mm wide,
+  // so give markers a minimum readable size there (life size needs no boost).
+  const MARKER_BOOST = { table: { core: 1.8, halo: 1.3 }, life: { core: 1, halo: 1 } };
+  // Over a real camera image the faint body shell nearly disappears; brighten it in AR only.
+  const AR_GLOW = { intensity: 1.7, base: 2.2 };        // multipliers, restored on exit
+  // WebXR anchors keep the body locked to the real world while ARCore refines tracking.
+  // ?anchors=0 turns them off (fixed transform in 'local' space) as a venue safety valve.
+  const ANCHORS_ON = !/[?&]anchors=0\b/.test(window.location.search);
   const PICK_ANGLE = THREE.MathUtils ? THREE.MathUtils.degToRad(8) : 0.14;
 
   let session = null, hitSource = null, refSpace = null;
@@ -28,6 +39,8 @@ window.BodyAR = !window.THREE ? null : (() => {
   let hasPose = false;
   let pendingPlace = false;       // tap arrived with no pose -> place on the next frame that has one
   let lastPlaceTap = -Infinity;   // debounce for the place/move buttons
+  let anchor = null;              // XRAnchor pinning the placed body to the world (if supported)
+  let anchorWanted = false;       // create an anchor on the next XR frame (needs an active frame)
   const PLACE_DEBOUNCE_MS = 400;
   const PLACE_DIST = 1.2, PLACE_DROP = 0.9;   // metres in front / below the viewer's eyes
   const t0 = performance.now();
@@ -61,14 +74,27 @@ window.BodyAR = !window.THREE ? null : (() => {
           m.blendDst = THREE.OneFactor;
           m.blendSrcAlpha = THREE.OneFactor;
           m.blendDstAlpha = THREE.OneFactor;
-          if (m.uniforms && m.uniforms.uAR) m.uniforms.uAR.value = 1;
+          if (m.uniforms && m.uniforms.uAR) {
+            m.uniforms.uAR.value = 1;
+            // Brighter body over the camera feed (originals restored on exit).
+            m.userData.arSaved = { i: m.uniforms.uIntensity.value, b: m.uniforms.uBase.value };
+            m.uniforms.uIntensity.value *= AR_GLOW.intensity;
+            m.uniforms.uBase.value *= AR_GLOW.base;
+          }
           m.needsUpdate = true;
         });
       });
     } else {
       blendSaved.forEach((m) => {
         m.blending = THREE.AdditiveBlending;
-        if (m.uniforms && m.uniforms.uAR) m.uniforms.uAR.value = 0;
+        if (m.uniforms && m.uniforms.uAR) {
+          m.uniforms.uAR.value = 0;
+          if (m.userData.arSaved) {
+            m.uniforms.uIntensity.value = m.userData.arSaved.i;
+            m.uniforms.uBase.value = m.userData.arSaved.b;
+            delete m.userData.arSaved;
+          }
+        }
         m.needsUpdate = true;
       });
       blendSaved = [];
@@ -202,10 +228,12 @@ window.BodyAR = !window.THREE ? null : (() => {
     else h.hidden = true;
   }
 
+  // Rescale in place: only the scale changes. arRoot's origin is the body's feet, so the
+  // figure grows/shrinks where it stands; position, rotation and the anchor are untouched.
   function setSize(s) {
     size = s;
     $("ar-overlay").querySelectorAll(".ar-seg button").forEach((b) => b.classList.toggle("active", b.dataset.size === s));
-    if (arRoot) arRoot.scale.setScalar(SCALE[s]);
+    if (arRoot) { arRoot.scale.setScalar(SCALE[s]); arRoot.updateMatrixWorld(true); }
     scaleLabels();
   }
 
@@ -264,8 +292,15 @@ window.BodyAR = !window.THREE ? null : (() => {
   /* ---------- XR loop ---------- */
   function onXRFrame(time, frame) {
     if (!frame || !session) return;
+    step(frame);
+  }
 
-    // 1) Viewer pose (drives placement). A null pose is a tracking hiccup: keep going.
+  /* One XR frame. After placement NOTHING here moves the body relative to the viewer:
+     the viewer pose is only cached for the next "Tap to place"/"Move". The body's
+     transform changes only from (a) placeInFront() on a button tap, (b) setSize()
+     scale, or (c) its world anchor, which ARCore keeps fixed to the real room. */
+  function step(frame) {
+    // 1) Viewer pose (used only for the next placement). Null = tracking hiccup: keep going.
     try {
       const pose = frame.getViewerPose(refSpace);
       if (pose) {
@@ -281,17 +316,21 @@ window.BodyAR = !window.THREE ? null : (() => {
     // 2) A tap that arrived without a pose is retried here, every frame, until one arrives.
     if (pendingPlace && hasPose) placeInFront();
 
-    // 3) Hit-test: cosmetic reticle only. Never gates placement; errors are swallowed.
+    // 3) World anchor: create it (needs an active frame), then follow ITS world pose.
+    updateAnchor(frame);
+
+    // 4) Hit-test: cosmetic reticle only. Never gates placement; errors are swallowed.
     updateReticle(frame);
 
-    // 4) Animate + render.
+    // 5) Animate + render.
     try {
       const t = (performance.now() - t0) / 1000;
+      const boost = MARKER_BOOST[size];
       I.markers.forEach((m) => {
         const k = m.sel ? 1.8 : 1.25;
         const s = Math.sin(t * 3.2 + m.phase);
-        m.halo.scale.setScalar(0.13 * k * (1 + s * 0.3));
-        m.core.scale.setScalar(k * (1 + s * 0.12));
+        m.halo.scale.setScalar(0.13 * k * boost.halo * (1 + s * 0.3));
+        m.core.scale.setScalar(k * boost.core * (1 + s * 0.12));
         const rp = (t * 0.7 + m.phase) % 1;
         m.ripple.scale.setScalar(0.07 * k + rp * 0.28 * k);
         m.ripple.material.opacity = (1 - rp) * (m.sel ? 0.8 : 0.55);
@@ -306,6 +345,38 @@ window.BodyAR = !window.THREE ? null : (() => {
     viewerPos.set(p.x, p.y, p.z);
     viewerQuat.set(o.x, o.y, o.z, o.w);
     hasPose = true;
+  }
+
+  function updateAnchor(frame) {
+    if (!placed || !arRoot) return;
+    try {
+      if (anchorWanted && frame.createAnchor && refSpace && window.XRRigidTransform) {
+        anchorWanted = false;
+        const p = arRoot.position, q = arRoot.quaternion;
+        const made = frame.createAnchor(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), refSpace);
+        if (made && made.then) {
+          made.then((a) => { if (placed && arRoot) anchor = a; else { try { a.delete(); } catch (e) {} } })
+              .catch(() => { anchor = null; });   // unsupported: keep the fixed transform
+        }
+      }
+      if (anchor && frame.trackedAnchors && frame.trackedAnchors.has(anchor)) {
+        const ap = frame.getPose(anchor.anchorSpace, refSpace);
+        if (ap) {
+          const p = ap.transform.position, o = ap.transform.orientation;
+          arRoot.position.set(p.x, p.y, p.z);
+          arRoot.quaternion.set(o.x, o.y, o.z, o.w);   // scale is untouched (Table/Life)
+        }
+      }
+    } catch (e) {
+      // Anchors are optional; on any error keep the fixed placement.
+      anchorWanted = false;
+    }
+  }
+
+  function dropAnchor() {
+    try { anchor && anchor.delete(); } catch (e) {}
+    anchor = null;
+    anchorWanted = false;
   }
 
   function updateReticle(frame) {
@@ -382,9 +453,41 @@ window.BodyAR = !window.THREE ? null : (() => {
     arRoot.updateMatrixWorld(true);
     placed = true;
     pendingPlace = false;
+    // Pin this spot to the real world (created on the next XR frame). Move = new anchor.
+    dropAnchor();
+    anchorWanted = ANCHORS_ON;
     if (reticle) reticle.visible = false;
     updateHint();
     return true;
+  }
+
+  // Mesh-only bounds of the body in arRoot space (skips glow/label sprites).
+  function meshBounds() {
+    const box = new THREE.Box3(), b = new THREE.Box3();
+    arRoot.updateMatrixWorld(true);
+    const inv = new THREE.Matrix4().copy(arRoot.matrixWorld).invert();
+    I.body.traverse((o) => {
+      if (!o.isMesh || !o.geometry) return;
+      if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+      b.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld).applyMatrix4(inv);
+      box.union(b);
+    });
+    return box;
+  }
+
+  // Measure the real model once (unscaled), then: scale = target / measured height, and
+  // lift the body so its soles sit exactly on arRoot's origin, the placement/anchor point.
+  // Size switches then grow/shrink the figure from its feet with no base jump.
+  function fitModel() {
+    arRoot.scale.setScalar(1);
+    const box = meshBounds();
+    const h = box.max.y - box.min.y;
+    if (h > 0.5 && h < 3) {
+      modelH = h;
+      I.body.position.y = -box.min.y;
+    }
+    SCALE.table = TARGET_H.table / modelH;
+    SCALE.life = TARGET_H.life / modelH;
   }
 
   /* ---------- enter / exit ---------- */
@@ -395,6 +498,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     I.pivot.remove(I.body);
     arRoot.add(I.body);
     I.body.position.set(0, 0, 0);
+    fitModel();
     reticle = buildReticle();
     I.scene.add(reticle);
     setArBlending(true);
@@ -411,6 +515,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       }
       try { hitSource && hitSource.cancel(); } catch (e) {}
       hitSource = null;
+      dropAnchor();
       if (I) {
         try { I.renderer.setAnimationLoop(null); } catch (e) {}
         I.renderer.xr.enabled = false;
@@ -485,7 +590,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     try {
       s = await navigator.xr.requestSession("immersive-ar", {
         // hit-test is OPTIONAL: phones without it still get AR with button placement.
-        optionalFeatures: ["hit-test", "dom-overlay"],
+        optionalFeatures: ANCHORS_ON ? ["hit-test", "dom-overlay", "anchors"] : ["hit-test", "dom-overlay"],
         domOverlay: { root: ov },
       });
     } catch (e) {
@@ -540,6 +645,21 @@ window.BodyAR = !window.THREE ? null : (() => {
         if (pose) setViewerPose(pose.position, pose.orientation); else hasPose = false;
         if (pendingPlace && hasPose) placeInFront();
       },
+      // Run the REAL per-frame step with a fake XRFrame (no device needed).
+      step(fakeFrame) { step(fakeFrame); },
+      // Height/base of the rendered body in world metres (meshes only: skips glow/label sprites).
+      measure() {
+        const box = new THREE.Box3(), b = new THREE.Box3();
+        I.body.updateMatrixWorld(true);
+        I.body.traverse((o) => {
+          if (!o.isMesh || !o.geometry) return;
+          if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+          b.copy(o.geometry.boundingBox).applyMatrix4(o.matrixWorld);
+          box.union(b);
+        });
+        return { height: box.max.y - box.min.y, minY: box.min.y, maxY: box.max.y };
+      },
+      setAnchor(a) { anchor = a; },
       get state() {
         return { placed, pendingPlace, hasPose, arRoot, bodyInArRoot: !!(arRoot && I && I.body.parent === arRoot) };
       },
