@@ -34,7 +34,7 @@ VISION_TEXT_LENGTH_THRESHOLD = 150
 
 # Vision model for direct classify+extract from image.
 # Override with VISION_MODEL env var (e.g. in .env) without code changes.
-VISION_MODEL = os.environ.get("VISION_MODEL", "qwen/qwen3.8-27b")
+VISION_MODEL = os.environ.get("VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
 # Key fields whose absence signals we need a vision retry
 _KEY_FIELDS = {
@@ -42,6 +42,7 @@ _KEY_FIELDS = {
     "shopping_bill": "items",
     "electricity_bill": "amount",
     "warranty_card": "product_name",
+    "radiology_report": "findings",  # must have at least one finding
 }
 
 # Document-type JSON schemas for single-shot vision extraction
@@ -81,6 +82,22 @@ _DOC_SCHEMAS = {
         "warranty_months": "integer or null",
         "serial_number": "string or null",
         "calculated_expiry_date": "string or null"
+    },
+    # radiology_report uses its own dedicated extractor (radiology_extractor.py)
+    # but we include a minimal schema here so the vision prompt is complete.
+    "radiology_report": {
+        "modality": "xray|mri|ct|ultrasound|other",
+        "study_name": "string or null",
+        "study_date": "string or null",
+        "referring_doctor": "string or null",
+        "radiologist": "string or null",
+        "clinical_history": "string or null",
+        "findings": [{"id": "f1", "text_from_report": "string", "body_zone": "zone_id or null",
+                       "side": "left|right|both|not_stated|not_applicable",
+                       "severity_as_written": "string or not_stated",
+                       "is_normal": "boolean", "explanation_en": "string", "explanation_ta": "string"}],
+        "impression": "string or null",
+        "overall_normal": "boolean"
     }
 }
 
@@ -189,7 +206,7 @@ def _extract_text_vision_fallback(image_bytes: bytes) -> str:
 
     response = groq_client.chat.completions.create(
         model=VISION_MODEL,
-        max_tokens=1500,
+        max_tokens=800,   # keep under free-tier 1000 OTPM limit
         messages=[{
             "role": "user",
             "content": [
@@ -229,26 +246,41 @@ def vision_classify_and_extract(image_bytes: bytes) -> dict | None:
 
     print(f"[OCR] Vision direct-extract payload: {len(b64_image)//1024} KB, {w}x{h}")
 
-    schemas_json = json.dumps(_DOC_SCHEMAS, indent=2)
+    schemas_json = json.dumps({k: v for k, v in _DOC_SCHEMAS.items() if k != "radiology_report"}, indent=2)
     prompt = f"""You are a medical document extraction specialist. Look at this image carefully.
 
 STEP 1 — Classify: determine the document type. Choose exactly one:
-  electricity_bill | prescription | warranty_card | shopping_bill | unclassified
+  electricity_bill | prescription | warranty_card | shopping_bill |
+  radiology_report | radiology_image | unclassified
+
+CRITICAL RADIOLOGY DISTINCTION:
+- "radiology_report": a PRINTED/TYPED written report from a radiologist describing
+  findings (has text: clinical history, findings, impression, doctor names, dates).
+- "radiology_image": an actual scan film, X-ray image, MRI slices, CT slices, or
+  ultrasound image — the actual medical image, NOT a written description of it.
+  If you see grayscale anatomical imagery, DICOM overlays, or scan films → radiology_image.
 
 STEP 2 — Extract: extract all fields using the schema for the detected type:
 {schemas_json}
+For radiology_report: extract modality, study_name, study_date, referring_doctor,
+radiologist, clinical_history, impression, overall_normal, and a list of findings
+(each with text_from_report, body_zone from the valid list, side, severity_as_written,
+is_normal, explanation_en, explanation_ta).
 
 SAFETY RULES (mandatory):
 - If a word is not clearly readable, return it exactly as seen with field confidence below 0.5.
 - Never replace an unclear word with a similar-looking real medicine name.
 - Never invent doses or timings that are not explicitly written in the document.
 - Medicine names must appear in the document; do NOT guess common brand names.
+- For radiology_report: set body_zone ONLY if the report names that body part explicitly.
+  Use null if unsure. NEVER guess side (left/right) if the report does not state it.
 
-STEP 3 — Assess: set "handwritten" to true ONLY if the main content (medicine names, items, doses, or quantities) is physically written by hand — NOT printed, typed, or computer-generated. A printed pharmacy label, printed bill, or typed receipt is NOT handwritten even if it has a handwritten signature or stamp. Set false for all printed documents.
+STEP 3 — Assess: set "handwritten" to true ONLY if the main content is physically
+written by hand. Printed/typed reports are NOT handwritten.
 
 Respond ONLY with a single JSON object with this exact structure:
 {{
-  "doc_type": "<one of the five types>",
+  "doc_type": "<one of the seven types>",
   "classification_confidence": <0.0-1.0>,
   "handwritten": <true|false>,
   "fields": {{ <fields matching the schema for doc_type> }},
@@ -258,6 +290,7 @@ Respond ONLY with a single JSON object with this exact structure:
 For prescription medications, "_confidence" should include per-medication confidence like:
 "_confidence": {{ "medications": 0.8, "medications_0_name": 0.9, "medications_0_dosage": 0.4 }}
 
+If the document is radiology_image, return "fields": {{}} and "_confidence": {{}}.
 If the document is unclassified, return "fields": {{}} and "_confidence": {{}}.
 """
 
@@ -282,7 +315,11 @@ If the document is unclassified, return "fields": {{}} and "_confidence": {{}}.
         if start != -1 and end != -1:
             raw = raw[start:end+1]
         parsed = json.loads(raw)
-        print(f"[OCR] Vision direct-extract result: type={parsed.get('doc_type')} handwritten={parsed.get('handwritten')}")
+        doc_type = parsed.get("doc_type")
+        print(f"[OCR] Vision direct-extract result: type={doc_type} handwritten={parsed.get('handwritten')}")
+        if doc_type == "radiology_report":
+            print("[OCR] Vision identified radiology_report. Falling back to vision OCR text extraction for dedicated processing.")
+            return None
         return parsed
     except Exception as e:
         print(f"[ERROR] Vision direct-extract failed: {e}")

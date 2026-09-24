@@ -1,20 +1,24 @@
 """
 Document classifier: weighted keyword scoring, with Groq LLM fallback
 for ambiguous cases. Covers electricity bills, prescriptions,
-warranty cards, and general shopping/retail bills.
+warranty cards, general shopping/retail bills, and radiology reports.
 
 Scoring: each keyword has a weight (default 1). Domain-specific
 high-signal terms get weight 3 so they can't be drowned out by generic
 words like "bill", "amount", or "total" that appear on every document.
+
+Radiology types:
+  radiology_report  — a written radiologist report (what we explain)
+  radiology_image   — the actual scan film/image (we cannot explain that)
 """
 import os
 import json
-from groq import Groq
+from app.ai.llm import chat, _parse_json
 
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-GROQ_MODEL = "openai/gpt-oss-120b"
-
-DOCUMENT_TYPES = ["electricity_bill", "prescription", "warranty_card", "shopping_bill", "unclassified"]
+DOCUMENT_TYPES = [
+    "electricity_bill", "prescription", "warranty_card", "shopping_bill",
+    "radiology_report", "radiology_image", "unclassified",
+]
 
 # Each entry is (keyword, weight).  Weight 3 = strong domain signal.
 WEIGHTED_KEYWORD_MAP = {
@@ -51,10 +55,45 @@ WEIGHTED_KEYWORD_MAP = {
         ("invoice", 1), ("receipt", 1), ("item", 1), ("total", 1),
         ("cash bill", 1), ("bill no", 1), ("gst", 1), ("amount paid", 1),
     ],
+    # ── Radiology written report (we explain this) ─────────────────────────
+    "radiology_report": [
+        # Ultra-strong radiology report signals (weight 5)
+        ("impression:", 5), ("impression :", 5), ("findings:", 5),
+        ("radiologist", 5), ("radiologist's report", 5),
+        ("no evidence of", 5), ("pa view", 5), ("ap view", 4),
+        ("clinical history", 4), ("clinical indication", 4),
+        # Colon-free variants — Tesseract on clean PIL images sometimes drops ":"
+        ("impression", 4), ("findings", 4),
+        # Strong modality / technique terms (weight 3)
+        ("x-ray", 3), ("xray", 3), ("mri", 3), ("magnetic resonance", 3),
+        ("ct scan", 3), ("hrct", 3), ("ultrasound", 3), ("usg", 3),
+        ("sonography", 3), ("radiology", 3), ("contrast", 3),
+        ("sagittal", 3), ("axial", 3), ("coronal", 3),
+        ("plain film", 3), ("mammogram", 3), ("fluoroscopy", 3),
+        # CT-specific phrasing common in demo reports
+        ("ct brain", 3), ("ct abdomen", 3), ("ct chest", 3),
+        ("ct plain", 3), ("with contrast", 3),
+        # Anatomy / report terms (weight 2)
+        ("lobe", 2), ("vertebr", 2), ("disc", 2), ("meniscus", 2),
+        ("cortex", 2), ("effusion", 2), ("consolidation", 2),
+        ("cardiomegaly", 2), ("opacity", 2), ("lucency", 2),
+        ("calcification", 2), ("lesion", 2), ("mass", 2),
+        ("haematoma", 2), ("haemorrhage", 2), ("hemorrhage", 2),
+        ("hydronephrosis", 2), ("calculus", 2),
+        ("referral", 1), ("referring doctor", 1), ("study date", 1),
+        ("report date", 1), ("normal study", 2), ("abnormal", 1),
+    ],
+    # ── Radiology scan image (warn user, do NOT explain) ───────────────────
+    # Keyword scoring cannot reliably detect *images* from text alone;
+    # this type is set only by the vision classifier. We include a minimal
+    # keyword entry so DOCUMENT_TYPES stays consistent.
+    "radiology_image": [
+        ("dicom", 3), ("window width", 3), ("window level", 3),
+    ],
 }
 
 # Fallback to LLM when best score is below this, OR when top two are close
-CONFIDENCE_THRESHOLD = 0.25
+CONFIDENCE_THRESHOLD = 0.08   # lowered from 0.25: keyword scores on PIL-rendered reports are 0.10-0.18
 # If the runner-up score is within this fraction of the best, use LLM
 AMBIGUITY_RATIO = 0.80   # i.e., second >= 80% of first → ambiguous
 
@@ -85,7 +124,8 @@ def classify_keyword(text: str) -> tuple[str, float, dict]:
 def classify_llm(text: str) -> tuple[str, float]:
     """LLM fallback classifier, used only when keyword scoring is ambiguous."""
     prompt = f"""Classify this document text into exactly one category:
-electricity_bill, prescription, warranty_card, shopping_bill, or unclassified.
+electricity_bill, prescription, warranty_card, shopping_bill,
+radiology_report, or unclassified.
 
 Rules:
 - "electricity_bill": any utility electricity/power bill (TNEB, TANGEDCO, EB, etc.)
@@ -93,7 +133,14 @@ Rules:
 - "warranty_card": product warranty or guarantee card
 - "shopping_bill": retail receipt, grocery bill, general invoice. Use this ONLY
   if the document is clearly a retail/grocery purchase — NOT for utility bills.
+- "radiology_report": a written report from a radiologist describing findings of
+  an X-ray, MRI, CT, ultrasound or other imaging study. Key signals: modality
+  name (X-ray/MRI/CT/USG), clinical history, findings section, impression section,
+  radiologist signature, referring doctor, date of study.
 - "unclassified": cannot be determined
+
+NOTE: "radiology_image" (the actual scan film) is detected by visual inspection
+only — do NOT return it for text-based classification.
 
 Respond ONLY with JSON: {{"type": "...", "confidence": 0.0-1.0}}
 
@@ -101,14 +148,12 @@ Document text:
 {text[:2000]}
 """
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            max_tokens=500,
-            response_format={"type": "json_object"},
+        raw = chat(
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=500,
+            response_format={"type": "json_object"}
         )
-        raw = response.choices[0].message.content.strip()
-        parsed = json.loads(raw)
+        parsed = _parse_json(raw)
         doc_type = parsed.get("type", "unclassified")
         confidence = float(parsed.get("confidence", 0.0))
         if doc_type not in DOCUMENT_TYPES:
@@ -126,6 +171,16 @@ def classify_document(text: str) -> tuple[str, float]:
       - the runner-up score is within AMBIGUITY_RATIO of the best (close race)
     Logs: [CLASSIFY] method=keyword|llm type=<type> scores=<top two>
     """
+    text_lower = text.lower()
+
+    # Fast heuristic: text containing clinical history + impression/findings
+    # is almost certainly a radiology report — skip LLM to avoid rate-limits.
+    if ("clinical history" in text_lower
+            and ("impression" in text_lower or "findings" in text_lower)
+            and not any(k in text_lower for k in ["kwh", "units consumed", "meter reading", "gstin", "mrp"])):
+        print("[CLASSIFY] method=heuristic type=radiology_report")
+        return "radiology_report", 0.90
+
     best_type, best_score, scores = classify_keyword(text)
 
     # Get top two for ambiguity check

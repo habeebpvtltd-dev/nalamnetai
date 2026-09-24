@@ -83,7 +83,28 @@ function renderResult(data) {
   docTypeEl.textContent = `Detected: ${data.object_type.replace(/_/g, " ")}`;
   fieldsListEl.innerHTML = "";
 
-  // Handwritten / low-confidence warning banner
+  // ── Radiology image guard ─────────────────────────────────────────────
+  if (data.object_type === "radiology_image") {
+    fieldsListEl.innerHTML = `
+      <div style="background:#1e3a5f;border:1px solid #2563eb;border-radius:10px;padding:16px;margin-bottom:12px;">
+        <div style="font-size:28px;text-align:center;margin-bottom:8px;">🩻</div>
+        <p style="color:#93c5fd;font-weight:700;margin:0 0 6px;font-size:15px;text-align:center;">Scan Film Detected</p>
+        <p style="color:#bfdbfe;font-size:13px;line-height:1.6;margin:0;text-align:center;">
+          ${data.radiology_image_warning || "Please scan the written report from the radiologist, not the scan film."}
+        </p>
+      </div>`;
+    _finalizeCard();
+    return;
+  }
+
+  // ── Radiology REPORT card ─────────────────────────────────────────────
+  if (data.object_type === "radiology_report") {
+    renderRadiologyCard(data);
+    _finalizeCard();
+    return;
+  }
+
+  // ── Handwritten / low-confidence warning banner ───────────────────────
   const existingBanner = document.getElementById("handwritten-banner");
   if (existingBanner) existingBanner.remove();
 
@@ -144,14 +165,125 @@ function renderResult(data) {
     }
   }
   
-  // Collapse preview image to give space for results
+  _finalizeCard();
+}
+
+/* Shared card finalization (collapse preview, show card) */
+function _finalizeCard() {
   previewImg.style.display = "none";
   const placeholderText = scanPlaceholder.querySelector("p");
   if (placeholderText) placeholderText.style.display = "none";
   scanPlaceholder.style.height = "auto";
   scanPlaceholder.style.padding = "0";
-
   resultCard.classList.add("visible");
+}
+
+/* ── Radiology Report Card Renderer ──────────────────────────────────── */
+function renderRadiologyCard(data) {
+  const r = data.radiology || {};
+  const fields = data.fields || {};
+  // Prefer radiology viewer data, fall back to raw fields
+  const studyName   = r.study_name   || fields.study_name   || "Radiology Report";
+  const modality    = r.modality     || fields.modality     || "";
+  const studyDate   = r.study_date   || fields.study_date   || "";
+  const radiologist = r.radiologist  || fields.radiologist  || "";
+  const impression  = r.impression   || fields.impression   || "";
+  const overall     = r.overall_normal !== undefined ? r.overall_normal : (fields.overall_normal || false);
+  const isCritical  = r.is_critical !== undefined ? r.is_critical : (fields.is_critical || false);
+  const zones       = r.zones        || [];
+  const allFindings = r.all_findings || fields.findings || [];
+  const lang        = document.documentElement.lang || "en";
+
+  // Study info header
+  let html = `
+    <div style="background:linear-gradient(135deg,#1e3a5f,#1a2744);border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+        <span style="font-size:22px;">🔬</span>
+        <span style="font-weight:700;font-size:15px;color:#93c5fd;">${escHtml(studyName)}</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 12px;font-size:12px;color:#94a3b8;">
+        ${modality    ? `<span>📡 ${escHtml(modality.toUpperCase())}</span>` : ""}
+        ${studyDate   ? `<span>📅 ${escHtml(studyDate)}</span>` : ""}
+        ${radiologist ? `<span>👨‍⚕️ ${escHtml(radiologist)}</span>` : ""}
+      </div>
+    </div>`;
+
+  // Overall normal badge
+  if (overall) {
+    html += `<div style="background:#14532d;border:1px solid #16a34a;border-radius:8px;padding:10px;text-align:center;margin-bottom:10px;color:#86efac;font-weight:600;font-size:13px;">✅ No Abnormality — Study is Normal</div>`;
+  } else if (isCritical) {
+    const criticalMsg = lang === "ta" 
+      ? "உங்கள் அறிக்கையில் மருத்துவர் விரைவில் பார்க்க வேண்டிய தகவல் உள்ளது. தயவுசெய்து இன்று உங்கள் மருத்துவரைத் தொடர்பு கொள்ளவும்." 
+      : "Your report mentions a finding the doctor may need to see soon. Please contact your doctor today.";
+    html += `<div style="background:#450a0a;border:1px solid #dc2626;border-radius:8px;padding:12px;margin-bottom:12px;color:#fca5a5;">
+      <div style="font-weight:700;font-size:14px;margin-bottom:6px;">⚠️ ${lang === "ta" ? "முக்கியமான தகவல்" : "Important Finding"}</div>
+      <div style="font-size:13px;line-height:1.4;margin-bottom:10px;">${criticalMsg}</div>
+      <button style="background:#dc2626;color:white;border:none;padding:8px 12px;border-radius:6px;font-size:13px;font-weight:600;width:100%;cursor:pointer;" onclick="const p = document.getElementById('e-contact').value; if(p) window.location.href='tel:'+p; else alert('Please set up Emergency Profile first.');">📞 ${lang === "ta" ? "அவசர தொடர்புக்கு அழைக்கவும்" : "Call emergency contact"}</button>
+    </div>`;
+  }
+
+  // Impression
+  if (impression) {
+    html += `
+      <div style="background:#1e293b;border-left:3px solid #6366f1;border-radius:8px;padding:12px 14px;margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">Impression (Copied from Report)</div>
+        <div style="font-size:13px;color:#e2e8f0;line-height:1.6;">${escHtml(impression)}</div>
+      </div>`;
+  }
+
+  // Abnormal findings by zone
+  if (zones.length > 0) {
+    html += `<div style="font-size:11px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;">Findings by Body Part</div>`;
+    for (const z of zones) {
+      const zoneName = lang === "ta" ? z.zone_ta : z.zone_en;
+      html += `
+        <div style="background:#1e293b;border-radius:8px;margin-bottom:8px;overflow:hidden;">
+          <div style="background:#312e81;padding:8px 12px;font-weight:600;font-size:13px;color:#c7d2fe;">
+            🗺️ ${escHtml(zoneName)}
+          </div>`;
+      for (const f of z.findings) {
+        const sideStr   = (f.side && f.side !== "not_stated" && f.side !== "not_applicable") ? ` · ${escHtml(f.side)}` : "";
+        const sevStr    = (f.severity_as_written && f.severity_as_written !== "not_stated") ? `<span style="color:#fbbf24;font-size:11px;"> [${escHtml(f.severity_as_written)}]</span>` : "";
+        const explanation = lang === "ta" ? (f.explanation_ta || f.explanation_en || "") : (f.explanation_en || "");
+        html += `
+          <div style="padding:10px 12px;border-top:1px solid #2d3748;">
+            <div style="font-size:12px;color:#94a3b8;font-style:italic;margin-bottom:4px;">"${escHtml((f.text_from_report||"").substring(0,120))}"</div>
+            <div style="font-size:13px;color:#e2e8f0;line-height:1.5;">${escHtml(explanation)}${sevStr}${sideStr ? `<span style="color:#94a3b8;font-size:11px;">${sideStr}</span>` : ""}</div>
+          </div>`;
+      }
+      html += `</div>`;
+    }
+  } else if (allFindings.length > 0) {
+    // All findings are normal — show summary
+    html += `<div style="background:#1e293b;border-radius:8px;padding:10px 12px;margin-bottom:8px;">
+      <div style="font-size:11px;font-weight:700;color:#a5b4fc;text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;">All Findings</div>`;
+    for (const f of allFindings) {
+      const explanation = lang === "ta" ? (f.explanation_ta || f.explanation_en || "") : (f.explanation_en || "");
+      const normalTag = f.is_normal ? `<span style="color:#4ade80;font-size:11px;"> ✓ Normal</span>` : "";
+      html += `<div style="padding:6px 0;border-top:1px solid #2d3748;font-size:13px;color:#cbd5e1;">${escHtml(explanation)}${normalTag}</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // Mandatory disclaimer
+  html += `
+    <div style="background:#1c1917;border:1px solid #78350f;border-radius:8px;padding:10px 14px;margin-top:10px;display:flex;gap:8px;align-items:flex-start;">
+      <span style="font-size:16px;flex-shrink:0;">ℹ️</span>
+      <p style="margin:0;font-size:12px;color:#d97706;line-height:1.5;">
+        This explains your report in simple words. Please discuss it with your doctor.
+      </p>
+    </div>`;
+
+  fieldsListEl.innerHTML = html;
+}
+
+function escHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 /* ---------- Emergency screen ---------- */

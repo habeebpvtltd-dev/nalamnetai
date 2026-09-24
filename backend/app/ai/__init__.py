@@ -16,6 +16,8 @@ from .classifier import classify_document
 from .extractor import extract_fields
 from .explainer import explain_document
 from .anomaly import check_bill_anomaly
+from .radiology_extractor import extract_radiology_fields
+from .body_zones import BODY_ZONES, VALID_ZONE_IDS, ZONE_BY_ID
 
 __all__ = [
     "extract_text",
@@ -26,4 +28,8 @@ __all__ = [
     "extract_fields",
     "explain_document",
     "check_bill_anomaly",
+    "extract_radiology_fields",
+    "BODY_ZONES",
+    "VALID_ZONE_IDS",
+    "ZONE_BY_ID",
 ]

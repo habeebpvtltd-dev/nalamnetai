@@ -6,11 +6,7 @@ import os
 import json
 from typing import Optional
 from pydantic import BaseModel, Field, ValidationError
-import groq
-from groq import Groq
-
-client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-GROQ_MODEL = "openai/gpt-oss-120b"
+from app.ai.llm import chat, _parse_json
 
 MANDATORY_FIELD_CONFIDENCE_THRESHOLD = 0.50
 
@@ -65,6 +61,9 @@ SCHEMA_MAP = {
     "prescription": PrescriptionFields,
     "warranty_card": WarrantyCardFields,
     "shopping_bill": ShoppingBillFields,
+    # Radiology has its own dedicated extractor (radiology_extractor.py),
+    # but register here so schema lookups don't crash.
+    "radiology_report": None,  # handled by extract_radiology_fields
 }
 
 
@@ -98,33 +97,14 @@ def extract_fields(document_type: str, text: str) -> dict:
     prompt = _build_prompt(document_type, text, schema)
 
     try:
-        response = client.chat.completions.create(
-            model=GROQ_MODEL,
-            max_tokens=4096,
-            extra_body={"reasoning_effort": "low"},
-            response_format={"type": "json_object"},
+        raw = chat(
             messages=[{"role": "user", "content": prompt}],
+            max_tokens=4096,
+            response_format={"type": "json_object"}
         )
-        raw = response.choices[0].message.content.strip()
-    except groq.BadRequestError:
-        try:
-            response = client.chat.completions.create(
-                model=GROQ_MODEL,
-                max_tokens=4096,
-                extra_body={"reasoning_effort": "low"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.choices[0].message.content.strip()
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1 and end >= start:
-                raw = raw[start:end+1]
-        except Exception:
-            return {"fields": {}, "confidence": {}}
-
-    try:
-        parsed = json.loads(raw)
-    except json.JSONDecodeError:
+        parsed = _parse_json(raw)
+    except Exception as e:
+        print(f"[EXTRACT] LLM error: {e}")
         return {"fields": {}, "confidence": {}}
 
     print(f"[EXTRACT] raw: {json.dumps(parsed)}")

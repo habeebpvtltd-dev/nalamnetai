@@ -15,21 +15,89 @@ from sqlalchemy.orm import Session
 from passlib.context import CryptContext
 from groq import Groq
 
-from app.ai import extract_text, extract_text_from_pdf, classify_document, extract_fields, vision_classify_and_extract, check_vision_needed
+from app.ai import (
+    extract_text, extract_text_from_pdf, classify_document, extract_fields,
+    vision_classify_and_extract, check_vision_needed,
+    extract_radiology_fields, ZONE_BY_ID,
+)
 from app.ai.voice import transcribe, synthesize
 from app.core.db import get_db
 from app.models.document import Document, ExtractedEntity, EmergencyProfile
 from pydantic import BaseModel
 
+# Radiology image response message (constant)
+_RADIOLOGY_IMAGE_MSG = (
+    "Please scan the written report from the radiologist, not the scan film. "
+    "We can only explain the printed report text, not the image itself."
+)
+
 class TTSRequest(BaseModel):
     text: str
     language: str = "en"
 
+
+# ---------------------------------------------------------------------------
+# Radiology viewer helper
+# ---------------------------------------------------------------------------
+
+def _build_radiology_viewer(document_id: str, fields: dict) -> dict:
+    """
+    Builds the viewer-ready JSON that /radiology/latest and /radiology/{id}
+    return, and is also embedded in the /scan response for radiology_report.
+
+    Returns:
+    {
+      document_id, study_name, modality, study_date, referring_doctor,
+      radiologist, clinical_history, impression, overall_normal,
+      zones: [
+        { zone_id, zone_en, zone_ta, findings: [ ...abnormal... ] }
+      ],
+      all_findings: [ ...all... ]
+    }
+    Zones list only contains zones that have at least one abnormal finding.
+    """
+    findings = fields.get("findings", [])
+    for f in findings:
+        if "body_zone" in f:
+            f["zone_id"] = f.pop("body_zone")
+
+    # Group ABNORMAL findings by zone
+    zone_map: dict[str, list] = {}
+    for f in findings:
+        if f.get("is_normal"):
+            continue
+        zone_id = f.get("zone_id") or "unzoned"
+        zone_map.setdefault(zone_id, []).append(f)
+
+    zones = []
+    for zone_id, zone_findings in zone_map.items():
+        zone_info = ZONE_BY_ID.get(zone_id, {"id": zone_id, "en": zone_id, "ta": zone_id})
+        zones.append({
+            "zone_id": zone_id,
+            "zone_en": zone_info.get("en", zone_id),
+            "zone_ta": zone_info.get("ta", zone_id),
+            "findings": zone_findings,
+        })
+
+    return {
+        "document_id": document_id,
+        "study_name": fields.get("study_name"),
+        "modality": fields.get("modality"),
+        "study_date": fields.get("study_date"),
+        "referring_doctor": fields.get("referring_doctor"),
+        "radiologist": fields.get("radiologist"),
+        "clinical_history": fields.get("clinical_history"),
+        "impression": fields.get("impression"),
+        "overall_normal": fields.get("overall_normal", False),
+        "is_critical": fields.get("is_critical", False),
+        "zones": zones,
+        "all_findings": findings,
+    }
+
+
 router = APIRouter()
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
-groq_client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-GROQ_MODEL = "openai/gpt-oss-120b"
-
+from app.ai.llm import chat, _parse_json
 
 @router.post("/scan")
 def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
@@ -53,7 +121,10 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
         if is_pdf:
             raw_text = extract_text_from_pdf(file_bytes)
             doc_type, class_confidence = classify_document(raw_text)
-            result = extract_fields(doc_type, raw_text)
+            if doc_type == "radiology_report":
+                result = extract_radiology_fields(raw_text)
+            else:
+                result = extract_fields(doc_type, raw_text)
         else:
             # Step 1: Tesseract + standard pipeline
             from app.ai.ocr import (
@@ -74,12 +145,28 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
 
             if len(raw_text) >= MIN_TEXT_LENGTH:
                 doc_type, class_confidence = classify_document(raw_text)
-                result = extract_fields(doc_type, raw_text)
+                if doc_type == "radiology_report":
+                    result = extract_radiology_fields(raw_text)
+                else:
+                    result = extract_fields(doc_type, raw_text)
 
-            # Step 3: check all four vision-retry triggers
-            needs_vision, vision_reason = check_vision_needed(
-                raw_text, avg_confidence, doc_type, result["fields"]
+            # Step 3: check all four vision-retry triggers.
+            # EXCEPTION: if Tesseract already classified as radiology_report with
+            # high confidence and sufficient text, skip vision entirely.
+            # vision_classify_and_extract() always returns None for radiology_report
+            # (by design), so triggering vision for it only wastes API tokens and
+            # triggers duplicate LLM extraction calls that exhaust TPD limits.
+            _is_high_conf_radiology = (
+                doc_type == "radiology_report"
+                and avg_confidence >= MIN_AVG_CONFIDENCE
+                and len(raw_text) >= 300
             )
+            if _is_high_conf_radiology:
+                needs_vision, vision_reason = False, ""
+            else:
+                needs_vision, vision_reason = check_vision_needed(
+                    raw_text, avg_confidence, doc_type, result["fields"]
+                )
 
             if needs_vision:
                 print(f"[SCAN] vision retry reason={vision_reason}")
@@ -117,12 +204,31 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
                 else:
                     # direct-extract failed — fallback to vision OCR text path
                     print(f"[SCAN] vision direct-extract failed, fallback=vision_ocr")
-                    from app.ai.ocr import _extract_text_vision_fallback
-                    fallback_text = _extract_text_vision_fallback(file_bytes)
+                    try:
+                        from app.ai.ocr import _extract_text_vision_fallback
+                        fallback_text = _extract_text_vision_fallback(file_bytes)
+                    except Exception as _ve:
+                        print(f"[SCAN] vision OCR fallback error (rate-limit?): {_ve}")
+                        fallback_text = ""
                     if fallback_text.strip():
                         raw_text = fallback_text.strip()
                         doc_type, class_confidence = classify_document(raw_text)
-                        result = extract_fields(doc_type, raw_text)
+                        # After vision OCR, route radiology reports to the
+                        # dedicated extractor (not the generic extract_fields)
+                        if doc_type == "radiology_report":
+                            result = extract_radiology_fields(raw_text)
+                        else:
+                            result = extract_fields(doc_type, raw_text)
+                    elif doc_type == "unclassified" and avg_confidence >= MIN_AVG_CONFIDENCE and len(raw_text) >= MIN_TEXT_LENGTH:
+                        # Vision OCR unavailable (rate-limited) but Tesseract gave us
+                        # good quality text — force LLM classification on it.
+                        from app.ai.classifier import classify_llm
+                        doc_type, class_confidence = classify_llm(raw_text)
+                        print(f"[SCAN] LLM re-classify on tess text → {doc_type}")
+                        if doc_type == "radiology_report":
+                            result = extract_radiology_fields(raw_text)
+                        elif doc_type != "unclassified":
+                            result = extract_fields(doc_type, raw_text)
 
     except Exception as e:
         print(f"[ERROR] Scan pipeline failed: {e}")
@@ -131,7 +237,33 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
             content={"status": "error", "message": "Couldn't read this document clearly, please retake the photo"}
         )
 
-    document = Document(document_type=doc_type, extracted_text=raw_text, status="needs_review")
+    # ── Radiology image guard: tell user to scan the written report instead
+    if doc_type == "radiology_image":
+        return JSONResponse(
+            status_code=200,
+            content={
+                "document_id": None,
+                "object_type": "radiology_image",
+                "classification_confidence": class_confidence,
+                "fields": {},
+                "field_confidence": {},
+                "handwritten": False,
+                "radiology_image_warning": _RADIOLOGY_IMAGE_MSG,
+            }
+        )
+
+    # ── Radiology report: dedicated extractor ──────────────────────────────
+    if doc_type == "radiology_report":
+        # If vision already gave us the fields (from vision_classify_and_extract path)
+        # they are already in result["fields"]. Otherwise run dedicated extractor.
+        if not result.get("fields"):
+            result = extract_radiology_fields(raw_text)
+        # Store the full structured fields as a JSON blob in extracted_text
+        radiology_fields = result.get("fields", {})
+        raw_text_to_store = json.dumps(radiology_fields, ensure_ascii=False)
+    else:
+        raw_text_to_store = raw_text
+    document = Document(document_type=doc_type, extracted_text=raw_text_to_store, status="needs_review")
     db.add(document)
     db.flush()
 
@@ -144,7 +276,7 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
         ))
     db.commit()
 
-    return {
+    response_payload = {
         "document_id": document.id,
         "object_type": doc_type,
         "classification_confidence": class_confidence,
@@ -152,6 +284,14 @@ def scan_document(file: UploadFile = File(...), db: Session = Depends(get_db)):
         "field_confidence": result["confidence"],
         "handwritten": handwritten,
     }
+
+    # Attach radiology-specific viewer key so the frontend can render the card
+    if doc_type == "radiology_report":
+        response_payload["radiology"] = _build_radiology_viewer(
+            document.id, result["fields"]
+        )
+
+    return response_payload
 
 
 @router.post("/emergency/setup")
@@ -312,18 +452,49 @@ def ask_assistant(question: str, language: str = "en", db: Session = Depends(get
     context_data = []
     
     for doc in documents:
-        entities = db.query(ExtractedEntity).filter(ExtractedEntity.document_id == doc.id).all()
-        doc_dict = {
-            "document_type": doc.document_type,
-            "created_at": doc.created_at.isoformat(),
-            "fields": {}
-        }
-        for e in entities:
-            if e.field_value:
-                doc_dict["fields"][e.field_name] = e.field_value
-        context_data.append(doc_dict)
-        
-    context_json = json.dumps(context_data, indent=2)
+        if doc.document_type == "radiology_report":
+            if language == "ta":
+                _ensure_tamil_translations(doc, db)
+            try:
+                fields = json.loads(doc.extracted_text or "{}")
+                context_data.append({
+                    "document_type": "radiology_report",
+                    "created_at": doc.created_at.isoformat(),
+                    "study_name": fields.get("study_name"),
+                    "modality": fields.get("modality"),
+                    "study_date": fields.get("study_date"),
+                    "radiologist": fields.get("radiologist"),
+                    "clinical_history": fields.get("clinical_history"),
+                    "impression": fields.get("impression"),
+                    "overall_normal": fields.get("overall_normal", False),
+                    "findings": [
+                        {
+                            "body_zone": f.get("body_zone"),
+                            "side": f.get("side"),
+                            "severity_as_written": f.get("severity_as_written"),
+                            "is_normal": f.get("is_normal"),
+                            "explanation_en": f.get("explanation_en"),
+                            "explanation_ta": f.get("explanation_ta"),
+                            "text_from_report": f.get("text_from_report"),
+                        }
+                        for f in (fields.get("findings") or [])
+                    ],
+                })
+            except Exception:
+                pass
+        else:
+            entities = db.query(ExtractedEntity).filter(ExtractedEntity.document_id == doc.id).all()
+            doc_dict = {
+                "document_type": doc.document_type,
+                "created_at": doc.created_at.isoformat(),
+                "fields": {}
+            }
+            for e in entities:
+                if e.field_value:
+                    doc_dict["fields"][e.field_name] = e.field_value
+            context_data.append(doc_dict)
+
+    context_json = json.dumps(context_data, indent=2, ensure_ascii=False)
 
     prompt = f"""You are NalamNet, a helpful family health & household assistant.
 Answer ONLY using the document data provided.
@@ -333,6 +504,9 @@ Never guess. For 'previous/last prescription' use only the most recent prescript
 UNCERTAINTY RULE: If a document was scanned from a handwritten prescription, or if any medicine has a confidence score below 0.5,
 you MUST mention in your response that those medicines could not be read clearly and the patient should confirm with a doctor or pharmacist.
 Never present an unclear medicine name as a confirmed fact.
+
+RADIOLOGY RULE: For radiology_report documents, only describe what the report says using the explanation_en/explanation_ta fields. Do NOT diagnose, prognose, or advise treatment. Always end radiology answers with: "Please discuss this report with your doctor."
+Critical explanation rules: keep the report's hedging exactly ('suspicious for' stays 'may be / needs more tests', never 'you have cancer'); no survival or prognosis talk; don't downplay either.
 
 Reply in the language given: {language}. For 'ta', write display_text in simple spoken Tamil (Tamil script). Write speech_text in warm, natural spoken Tamil — the way a caring family member talks to an elderly person. Short sentences, polite forms (e.g. -ங்க endings), no formal written Tamil, no English symbols. Medicine names stay in English letters.
 
@@ -352,32 +526,21 @@ Question ({language}): {question}
     }
 
     try:
-        response = groq_client.chat.completions.create(
-            model=GROQ_MODEL, 
-            max_tokens=4096, 
+        full_prompt = prompt
+        if language == "ta":
+            full_prompt += "\n\nRespond with {\"display_text\": \"...\", \"speech_text\": \"...\"}"
+        raw = chat(
+            messages=[{"role": "user", "content": full_prompt}],
             temperature=0.2,
-            extra_body={"reasoning_effort": "low"},
+            max_tokens=4096,
             response_format={"type": "json_object"},
-            messages=[{"role": "user", "content": prompt}],
+            use_ta_chain=(language == "ta")
         )
-        raw = response.choices[0].message.content.strip()
-    except groq.BadRequestError:
-        try:
-            response = groq_client.chat.completions.create(
-                model=GROQ_MODEL, 
-                max_tokens=4096, 
-                temperature=0.2,
-                extra_body={"reasoning_effort": "low"},
-                messages=[{"role": "user", "content": prompt}],
-            )
-            raw = response.choices[0].message.content.strip()
-            start = raw.find("{")
-            end = raw.rfind("}")
-            if start != -1 and end != -1 and end >= start:
-                raw = raw[start:end+1]
-        except Exception:
-            return fallback_response
-    except Exception:
+        raw = _parse_json(raw)
+        # Convert dict to string for the following json.loads block (or just assign to parsed directly)
+        raw = json.dumps(raw)
+    except Exception as e:
+        print(f"[ASSISTANT] LLM error: {e}")
         return fallback_response
 
     try:
@@ -387,3 +550,75 @@ Question ({language}): {question}
         return parsed
     except json.JSONDecodeError:
         return fallback_response
+
+
+# ---------------------------------------------------------------------------
+# Radiology viewer endpoints
+# ---------------------------------------------------------------------------
+
+def _load_radiology_viewer(doc: "Document", db: Session) -> dict:
+    """Reconstruct viewer JSON from a stored radiology_report Document."""
+    try:
+        fields = json.loads(doc.extracted_text or "{}")
+    except (json.JSONDecodeError, TypeError):
+        fields = {}
+    return _build_radiology_viewer(doc.id, fields)
+
+
+def _ensure_tamil_translations(doc: "Document", db: Session):
+    try:
+        fields = json.loads(doc.extracted_text or "{}")
+        findings = fields.get("findings", [])
+        
+        needs_ta = False
+        for f in findings:
+            if "explanation_ta" not in f or not f["explanation_ta"]:
+                needs_ta = True
+                break
+                
+        if needs_ta:
+            from app.ai.radiology_extractor import generate_tamil_translations_batch
+            generate_tamil_translations_batch(findings)
+            fields["findings"] = findings
+            doc.extracted_text = json.dumps(fields, ensure_ascii=False)
+            db.commit()
+    except Exception as e:
+        print(f"Error generating Tamil on demand: {e}")
+
+@router.get("/radiology/latest")
+def get_latest_radiology(lang: str = "en", db: Session = Depends(get_db)):
+    """
+    Returns the most recently scanned radiology_report in viewer-ready JSON.
+    This is what the Part 3 3D viewer will poll.
+    """
+    doc = (
+        db.query(Document)
+        .filter(Document.document_type == "radiology_report")
+        .order_by(Document.created_at.desc())
+        .first()
+    )
+    if not doc:
+        raise HTTPException(status_code=404, detail="No radiology report scanned yet")
+        
+    if lang == "ta":
+        _ensure_tamil_translations(doc, db)
+        
+    return _load_radiology_viewer(doc, db)
+
+
+@router.get("/radiology/{document_id}")
+def get_radiology_by_id(document_id: str, lang: str = "en", db: Session = Depends(get_db)):
+    """
+    Returns a specific radiology_report by document_id in viewer-ready JSON.
+    """
+    doc = db.query(Document).filter(
+        Document.id == document_id,
+        Document.document_type == "radiology_report",
+    ).first()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Radiology report not found")
+        
+    if lang == "ta":
+        _ensure_tamil_translations(doc, db)
+        
+    return _load_radiology_viewer(doc, db)

@@ -1,0 +1,86 @@
+
+--- ﻿====================================================================== ---
+
+--- chest_xray_pa.jpg ---
+Finding 1:
+  TEXT: There is a mild blunting of the left costophrenic angle.
+  EN  : Mild blunting of the left costophrenic angle, indicating a small left pleural effusion.
+  TA  : Mild blunting of the left costophrenic angle, indicating a small left pleural effusion. (Tamil explanation not available)
+Finding 2:
+  TEXT: Amoderate consolidation is seen in the right lower lobe.
+  EN  : Moderate consolidation in the right lower lobe, suggesting infection.
+  TA  : Moderate consolidation in the right lower lobe, suggesting infection. (Tamil explanation not available)
+
+--- mri_lumbar_spine.jpg ---
+Finding 1:
+  TEXT: L4-L5 level: Mild disc bulge with bilateral nerve root contact, left more than right. No severe neural compression.
+  EN  : 
+  TA  : (Tamil explanation not available)
+Finding 2:
+  TEXT: L5-S1 level: Mild disc desiccation.
+  EN  : There is mild drying of the disc between L5 and S1.
+  TA  : L5 α««α«▒α»ìα«▒α»üα««α»ì S1 α«çα«ƒα»êα«»α«┐α«▓α«╛α«⌐ α«ƒα«┐α«╕α»ìα«òα»ì α«Üα«┐α«▒α«┐α«ñα»ü
+Finding 3:
+  TEXT: Facet joints: Mild facet joint arthropathy at L4-L5 and L5-S1 levels.
+  EN  : There is mild wear of the joint surfaces in the lower back at the L4-L5 and L5-S1 levels.
+  TA  : There is mild wear of the joint surfaces in the lower back at the L4-L5 and L5-S1 levels. (Tamil explanation not available)
+
+--- mri_left_knee.jpg ---
+Finding 1:
+  TEXT: There is a grade III signal intensity (tear) involving the posterior horn of the medial meniscus of the left knee. The tear extends to the articular surface, consistent with a complete medial meniscus tear.
+  EN  : Complete tear of the posterior horn of the medial meniscus in the left knee.
+  TA  : Complete tear of the posterior horn of the medial meniscus in the left knee. (Tamil explanation not available)
+Finding 2:
+  TEXT: Mild thickening and increased signal, suggestive of grade | sprain. No complete tear.
+  EN  : Mild thickening and increased signal in the medial collateral ligament of the left knee, suggesting a sprain.
+  TA  : Mild thickening and increased signal in the medial collateral ligament of the left knee, suggesting a sprain. (Tamil explanation not available)
+Finding 3:
+  TEXT: Mild joint effusion noted in the left knee joint.
+  EN  : Mild build-up of fluid in the left knee joint.
+  TA  : Mild build-up of fluid in the left knee joint. (Tamil explanation not available)
+Finding 4:
+  TEXT: Mild thinning of articular cartilage over the medial femoral condyle.
+  EN  : Mild thinning of cartilage over the medial femoral condyle of the left knee.
+  TA  : Mild thinning of cartilage over the medial femoral condyle of the left knee. (Tamil explanation not available)
+
+--- ct_brain.jpg ---
+Finding 1:
+  TEXT: There is an acute subdural haematoma noted on the left fronto-parietal region with 6mm midline shift to the right.
+  EN  : Acute subdural haematoma in the left fronto-parietal area, causing a 6mm shift of the midline to the right.
+  TA  : Acute subdural haematoma in the left fronto-parietal area, causing a 6mm shift of the midline to the right. (Tamil explanation not available)
+Finding 2:
+  TEXT: Ventricles appear compressed on the left side.
+  EN  : The ventricles are compressed on the left side.
+  TA  : The ventricles are compressed on the left side. (Tamil explanation not available)
+
+--- ct_abdomen.jpg ---
+Finding 1:
+  TEXT: The right kidney shows an 8 mm calculus in the lower pole.
+  EN  : The right kidney has an 8 mm stone in its lower pole.
+  TA  : The right kidney has an 8 mm stone in its lower pole. (Tamil explanation not available)
+Finding 2:
+  TEXT: There is associated mild hydronephrosis.
+  EN  : There is mild swelling of the right kidney due to blockage.
+  TA  : There is mild swelling of the right kidney due to blockage. (Tamil explanation not available)
+Finding 3:
+  TEXT: Liver: Grade | fatty liver.
+  EN  : The liver shows fatty liver changes.
+  TA  : The liver shows fatty liver changes. (Tamil explanation not available)
+Finding 4:
+  TEXT: Gallbladder is well distended, no radiopaque calculi.
+  EN  : The gallbladder is distended but has no visible stones.
+  TA  : The gallbladder is distended but has no visible stones. (Tamil explanation not available)
+
+--- chest_xray_normal.jpg ---
+
+--- ct_chest_mass.jpg ---
+Finding 1:
+  TEXT: A3 cm spiculated mass is seen in the left upper lobe of the lung, suspicious for neoplasm.
+  EN  : A 3 cm spiculated mass is seen in the left upper lobe of the lung, suspicious for neoplasm.
+  TA  : A 3 cm spiculated mass is seen in the left upper lobe of the lung, suspicious for neoplasm. (Tamil explanation not available)
+Finding 2:
+  TEXT: There are a few subcentimeter mediastinal lymph nodes, likely reactive.
+  EN  : Several small mediastinal lymph nodes, likely reactive.
+  TA  : Several small mediastinal lymph nodes, likely reactive. (Tamil explanation not available)
+
+--- ct_brain_normal.jpg ---

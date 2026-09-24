@@ -1,0 +1,63 @@
+======================================================================
+NalamNet Radiology Report Test
+Backend: http://localhost:8000/api/v1/xr/scan
+======================================================================
+----------------------------------------------------------------------
+
+a) Chest X-ray PA
+  File: chest_xray_pa.jpg
+  document_id : 7fec2b79-0cf2-4905-ba13-eb91855a48d1
+  type        : radiology_report
+  study_name  : Chest X-ray PA
+  overall_normal: False
+  is_critical : False
+  impression  : 1. Moderate right lower lobe consolidation, likely infective. 2. Mild left pleural effusion.
+  zones (2 abnormal):
+    → zone_id=chest_lung_left  en="Left Lung"  ta="இடது நுரையீரல்"
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : There is a mild blunting of the left costophrenic angle.
+       expl_en: There is a mild blunting of the left lower edge of the lung.
+       expl_ta: 
+    → zone_id=chest_lung_right  en="Right Lung"  ta="வலது நுரையீரல்"
+       finding: side=right  sev_written=moderate  sev_level=moderate  is_normal=False
+       text   : A moderate consolidation is seen in the right lower lobe.
+       expl_en: The report says: A moderate consolidation is seen in the right lower lobe.. Please discuss this with your doctor.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+c) MRI Left Knee
+  File: mri_left_knee.jpg
+  document_id : cc31f15b-10b3-415b-9e8e-615d8ff6a039
+  type        : radiology_report
+  study_name  : None
+  overall_normal: False
+  is_critical : False
+  impression  : 1. Complete tear of the posterior horn of the medial meniscus, left knee. 2. Mild joint effusion, left knee. 3. Grade I 
+  zones (1 abnormal):
+    → zone_id=knee_left  en="Left Knee"  ta="இடது முழங்கால்"
+       finding: side=left  sev_written=grade iii  sev_level=severe  is_normal=False
+       text   : There is a grade III signal intensity (tear) involving the posterior horn of the medial meniscus of the left knee. The tear extends to the articular surface, consistent with a complete medial meniscus tear.
+       expl_en: The report says there is a complete tear in the cushion inside the left knee. The tear reaches the smooth covering of the joint.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Medial collateral ligament: Mild thickening and increased signal, suggestive of grade | sprain. No complete tear.
+       expl_en: The report says there is a stretch injury of the ligament on the inner side of the left knee, with mild thickening and increased signal, but no complete tear.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Joint effusion: Mild joint effusion noted in the left knee joint.
+       expl_en: The report states there is a slight amount of fluid buildup on the left side of the knee, and the severity is mild.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Articular cartilage: Mild thinning of articular cartilage over the medial femoral condyle.
+       expl_en: The report says there is mild thinning of the smooth covering of the joint over the lower end of the thigh bone on the inner side of the left knee.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+
+SUMMARY
+  ✅ PASS  a) Chest X-ray PA
+  ✅ PASS  c) MRI Left Knee

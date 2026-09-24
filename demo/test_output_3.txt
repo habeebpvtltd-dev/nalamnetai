@@ -1,0 +1,203 @@
+======================================================================
+NalamNet Radiology Report Test
+Backend: http://localhost:8000/api/v1/xr/scan
+======================================================================
+----------------------------------------------------------------------
+
+a) Chest X-ray PA
+  File: chest_xray_pa.jpg
+  document_id : 498c6d72-c8c3-444a-8289-73cc4c7c35af
+  type        : radiology_report
+  study_name  : Chest X-ray PA
+  overall_normal: False
+  is_critical : False
+  impression  : 1. Moderate right lower lobe consolidation, likely infective. 2. Mild left pleural effusion.
+  zones (3 abnormal):
+    → zone_id=chest_lung_left  en="Left Lung"  ta="இடது நுரையீரல்"
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : There is a mild blunting of the left costophrenic angle.
+       expl_en: A mild flattening (blunting) is seen at the left costophrenic angle.
+       expl_ta: 
+    → zone_id=chest_lung_right  en="Right Lung"  ta="வலது நுரையீரல்"
+       finding: side=right  sev_written=moderate  sev_level=moderate  is_normal=False
+       text   : Amoderate consolidation is seen in the right lower lobe.
+       expl_en: There is moderate solid density (consolidation) in the lower part of the right lung.
+       expl_ta: 
+    → zone_id=unzoned  en="unzoned"  ta="unzoned"
+       finding: side=not_applicable  sev_written=not_stated  sev_level=unknown  is_normal=False
+       text   : Trachea is centrally placed.
+       expl_en: The trachea is positioned in the middle of the chest.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+b) MRI Lumbar Spine
+  File: mri_lumbar_spine.jpg
+  document_id : 386908f4-0127-4681-99f7-0d5f74d7f248
+  type        : radiology_report
+  study_name  : MRI Lumbar Spine
+  overall_normal: False
+  is_critical : False
+  impression  : 1. Mild L4-L5 bulge, bilateral nerve root contact, left more than right. 2. Mild degenerative changes at L5-S1.
+  zones (1 abnormal):
+    → zone_id=lumbar_spine  en="Lumbar Spine (Lower Back)"  ta="இடுப்பு முதுகெலும்பு"
+       finding: side=both  sev_written=mild  sev_level=mild  is_normal=False
+       text   : L4-L5 level: Mild disc bulge with bilateral nerve root contact, left more than right.
+       expl_en: The report says: L4-L5 level: Mild disc bulge with bilateral nerve root contact, left more than right.. Please discuss this with your doctor.
+       expl_ta: 
+       finding: side=not_stated  sev_written=mild  sev_level=mild  is_normal=False
+       text   : L5-S1 level: Mild disc desiccation.
+       expl_en: The disc at L5-S1 shows mild dehydration.
+       expl_ta: 
+       finding: side=not_stated  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Facet joints: Mild facet joint arthropathy at L4-L5 and L5-S1 levels.
+       expl_en: There is mild arthritis of the facet joints at L4-L5 and L5-S1.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+c) MRI Left Knee
+  File: mri_left_knee.jpg
+  document_id : cb1d5abf-b4b6-49f1-8a02-e3c1ced4aa0d
+  type        : radiology_report
+  study_name  : MRI Left Knee
+  overall_normal: False
+  is_critical : False
+  impression  : 1. Complete tear of the posterior horn of the medial meniscus, left knee. 2. Mild joint effusion, left knee. 3. Grade | 
+  zones (1 abnormal):
+    → zone_id=knee_left  en="Left Knee"  ta="இடது முழங்கால்"
+       finding: side=left  sev_written=grade iii  sev_level=severe  is_normal=False
+       text   : There is a grade III signal intensity (tear) involving the posterior horn of the medial meniscus of the left knee. The tear extends to the articular surface, consistent with a complete medial meniscus tear.
+       expl_en: The report states there is a complete tear of the posterior horn of the medial meniscus in the left knee. This is described as a grade III signal intensity tear extending to the articular surface.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=unknown  is_normal=False
+       text   : Medial collateral ligament: Mild thickening and increased signal, suggestive of grade | sprain. No complete tear.
+       expl_en: The medial collateral ligament shows mild thickening and increased signal suggestive of a grade | sprain, with no complete tear.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Joint effusion: Mild joint effusion noted in the left knee joint.
+       expl_en: Mild joint effusion is noted in the left knee joint.
+       expl_ta: 
+       finding: side=left  sev_written=mild  sev_level=mild  is_normal=False
+       text   : Articular cartilage: Mild thinning of articular cartilage over the medial femoral condyle.
+       expl_en: Mild thinning of articular cartilage over the medial femoral condyle is noted.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+d) CT Brain
+  File: ct_brain.jpg
+  document_id : d3bb27f3-013a-452c-8ff8-0d289fc34a06
+  type        : radiology_report
+  study_name  : CT Brain (Plain)
+  overall_normal: False
+  is_critical : True
+  impression  : Acute left fronto-parietal subdural haematoma with significant midline shift. Urgent neurosurgical consultation is recom
+  zones (1 abnormal):
+    → zone_id=head_brain  en="Head / Brain"  ta="தலை / மூளை"
+       finding: side=left  sev_written=acute  sev_level=severe  is_normal=False
+       text   : There is an acute subdural haematoma noted on the left fronto-parietal region with 6mm midline shift to the right.
+       expl_en: The report states there is an acute subdural haematoma on the left fronto-parietal region with a 6mm midline shift to the right.
+       expl_ta: 
+       finding: side=left  sev_written=not_stated  sev_level=unknown  is_normal=False
+       text   : Ventricles appear compressed on the left side.
+       expl_en: The report states the ventricles appear compressed on the left side.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+e) CT Abdomen
+  File: ct_abdomen.jpg
+  document_id : 0611a1d1-bb56-4465-a8c4-09216ccf5c47
+  type        : radiology_report
+  study_name  : CT Abdomen with Contrast
+  overall_normal: False
+  is_critical : False
+  impression  : 1. 8mm calculus in the right kidney with mild hydronephrosis. 2. Grade | fatty liver.
+  zones (2 abnormal):
+    → zone_id=kidney_right  en="Right Kidney"  ta="வலது சிறுநீரகம்"
+       finding: side=right  sev_written=mild  sev_level=mild  is_normal=False
+       text   : The right kidney shows an 8 mm calculus in the lower pole.
+       expl_en: The report states there is an 8 mm stone in the lower part of the right kidney.
+       expl_ta: 
+       finding: side=right  sev_written=mild  sev_level=mild  is_normal=False
+       text   : There is associated mild hydronephrosis.
+       expl_en: The report states there is mild swelling of the right kidney related to the stone.
+       expl_ta: 
+    → zone_id=liver  en="Liver"  ta="கல்லீரல்"
+       finding: side=not_stated  sev_written=normal  sev_level=unknown  is_normal=False
+       text   : Liver: Grade | fatty liver.
+       expl_en: The report states the liver has grade fatty liver.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+f) Chest X-ray Normal
+  File: chest_xray_normal.jpg
+  document_id : 61a5e781-abfa-45ee-a4c0-89925778830e
+  type        : radiology_report
+  study_name  : Chest X-ray PA View
+  overall_normal: True
+  is_critical : False
+  impression  : Normal study. No abnormality detected.
+  zones (0 abnormal):
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+g) CT Chest Mass
+  File: ct_chest_mass.jpg
+  document_id : 52b606ce-a33e-4c2f-be5c-f32c3cd16e42
+  type        : radiology_report
+  study_name  : CT Chest
+  overall_normal: False
+  is_critical : True
+  impression  : 3 cm spiculated mass in the left upper lobe, suspicious for neoplasm. CT-guided biopsy recommended.
+  zones (1 abnormal):
+    → zone_id=chest_lung_left  en="Left Lung"  ta="இடது நுரையீரல்"
+       finding: side=left  sev_written=not_stated  sev_level=unknown  is_normal=False
+       text   : A3 cm spiculated mass is seen in the left upper lobe of the lung, suspicious for neoplasm.
+       expl_en: There is a 3 cm spiculated mass in the left upper part of the lung that is suspicious for a neoplasm.
+       expl_ta: 
+       finding: side=not_stated  sev_written=not_stated  sev_level=unknown  is_normal=False
+       text   : There are a few subcentimeter mediastinal lymph nodes, likely reactive.
+       expl_en: A few small lymph nodes in the middle of the chest are likely reactive.
+       expl_ta: 
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+  [pause 20 s to stay within Groq TPM limits...]
+
+h) CT Brain Normal
+  File: ct_brain_normal.jpg
+  document_id : d5cc6d73-5c38-449e-819b-5e88a2db4e5c
+  type        : radiology_report
+  study_name  : CT Brain (Plain)
+  overall_normal: True
+  is_critical : False
+  impression  : Normal CT Brain. No evidence of intracranial bleed or midline shift.
+  zones (0 abnormal):
+
+  ✅ PASS — Assertions succeeded
+----------------------------------------------------------------------
+
+SUMMARY
+  ✅ PASS  a) Chest X-ray PA
+  ✅ PASS  b) MRI Lumbar Spine
+  ✅ PASS  c) MRI Left Knee
+  ✅ PASS  d) CT Brain
+  ✅ PASS  e) CT Abdomen
+  ✅ PASS  f) Chest X-ray Normal
+  ✅ PASS  g) CT Chest Mass
+  ✅ PASS  h) CT Brain Normal
