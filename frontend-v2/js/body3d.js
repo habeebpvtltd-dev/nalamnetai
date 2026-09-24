@@ -302,6 +302,7 @@ const Body3D = (() => {
         uPower: { value: power },
         uIntensity: { value: intensity },
         uBase: { value: base },
+        uAR: { value: 0 }, // 1 only in AR: alpha follows brightness so the glow stays see-through over the camera
       },
       vertexShader: `
         varying vec3 vN; varying vec3 vV;
@@ -312,12 +313,13 @@ const Body3D = (() => {
           gl_Position = projectionMatrix * mv;
         }`,
       fragmentShader: `
-        uniform vec3 uColor; uniform float uPower; uniform float uIntensity; uniform float uBase;
+        uniform vec3 uColor; uniform float uPower; uniform float uIntensity; uniform float uBase; uniform float uAR;
         varying vec3 vN; varying vec3 vV;
         void main(){
           float f = 1.0 - abs(dot(normalize(vN), normalize(vV)));
           f = pow(f, uPower);
-          gl_FragColor = vec4(uColor * (f * uIntensity + uBase), 1.0);
+          vec3 col = uColor * (f * uIntensity + uBase);
+          gl_FragColor = vec4(col, mix(1.0, clamp(max(col.r, max(col.g, col.b)), 0.0, 1.0), uAR));
         }`,
       transparent: true,
       blending: THREE.AdditiveBlending,
@@ -819,5 +821,10 @@ const Body3D = (() => {
     faceFront: () => resetView({ yaw: 0 }),
     faceBack: () => resetView({ yaw: Math.PI }),
     get shellColor() { return shellMat && shellMat.uniforms.uColor.value.getHexString(); },
+    // Used by ar.js to reuse the same renderer, scene, body and markers in WebXR.
+    _internals: () => ready ? {
+      renderer, scene, camera, pivot, body, markers, glowTex,
+      applyCamera, resize, stopLoop: stop, startLoop: start,
+    } : null,
   };
 })();

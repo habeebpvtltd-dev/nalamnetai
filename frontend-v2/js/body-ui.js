@@ -345,6 +345,20 @@ window.BodyUI = (() => {
     $("sheet-handle").onclick = () => setCollapsed(!collapsed);
     if (FLAGS.demo) { $("btn-demo").hidden = false; $("btn-demo").onclick = () => toggleDemo(); buildDemoMenu(); }
     if (FLAGS.debug) $("debug-panel").hidden = false;
+    // AR is an extra mode: the button only appears when the phone supports immersive-ar.
+    if (window.BodyAR) {
+      BodyAR.isSupported().then((ok) => {
+        if (!ok || !glOk) return;
+        $("btn-ar").hidden = false;
+        animateIn($("btn-ar"), { y: 8 });
+      });
+      $("btn-ar").onclick = () => {
+        if (!Body3D.ready) { toast("AR is not available on this phone"); return; }
+        stopAnyAudio();
+        try { BodyAR.start({ items, report }); }
+        catch (e) { console.error(e); toast("AR is not available on this phone"); }
+      };
+    }
     if (window.ResizeObserver) {
       const ro = new ResizeObserver(() => updateInsets());
       ro.observe($("body-sheet")); ro.observe($("body-top"));
@@ -369,5 +383,10 @@ window.BodyUI = (() => {
     toggleDemo(false);
   }
 
-  return { init, onShow, onHide, prefetch, load, get report() { return report; } };
+  function afterAR() {
+    if (Body3D.ready) Body3D.highlight(sel >= 0 ? sel : null);
+    requestAnimationFrame(updateInsets);
+  }
+
+  return { init, onShow, onHide, prefetch, load, afterAR, get report() { return report; } };
 })();

@@ -496,3 +496,52 @@ details.f-quote summary { cursor: pointer; min-height: 40px; display: flex; alig
 .body-wrap .mlabel { background: rgba(5, 11, 26, .88); }
 .body-wrap .banner-critical { background: rgba(60, 10, 18, .95); }
 .body-wrap .banner-ok { background: rgba(6, 44, 34, .94); }
+
+/* =====================================================================
+   AR ("View in your room")
+   ===================================================================== */
+.ar-launch {
+  position: absolute; left: 10px; top: calc(var(--top-inset, 140px) + 64px); z-index: 4;
+  display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px;
+  border-radius: 14px; border: 1px solid rgba(45, 212, 191, .55); color: #04121f; font-weight: 800; font-size: 15px;
+  background: var(--grad); box-shadow: var(--glow);
+}
+.ar-launch svg { width: 22px; height: 22px; }
+
+/* The overlay is made fullscreen by the browser during the session; keep it transparent. */
+.ar-overlay {
+  position: fixed; inset: 0; z-index: 1000; background: transparent; pointer-events: none;
+  display: flex; flex-direction: column; padding: calc(12px + env(safe-area-inset-top, 0px)) 12px calc(12px + env(safe-area-inset-bottom, 0px));
+  font-family: var(--font); color: var(--text); font-size: 17px;
+}
+.ar-overlay:not([hidden]) { display: flex; }
+.ar-overlay > *, .ar-overlay .ar-bottom > * { pointer-events: auto; }
+.ar-overlay .ar-bottom { pointer-events: none; margin-top: auto; display: flex; flex-direction: column; gap: 10px; }
+.ar-top { display: flex; gap: 10px; align-items: center; justify-content: space-between; }
+.ar-btn {
+  min-height: 52px; padding: 0 18px; border-radius: 16px; font-weight: 800; font-size: 16px;
+  background: rgba(5, 11, 26, .88); color: var(--text); border: 1px solid var(--border-2);
+}
+.ar-btn.primary { background: var(--grad); color: #04121f; border-color: transparent; }
+.ar-seg { display: flex; padding: 4px; gap: 4px; border-radius: 16px; background: rgba(5, 11, 26, .88); border: 1px solid var(--border-2); }
+.ar-seg button { min-height: 44px; padding: 0 12px; border: 0; border-radius: 12px; background: transparent; color: var(--text-2); font-weight: 700; font-size: 15px; }
+.ar-seg button.active { background: var(--grad); color: #04121f; }
+.ar-banner { margin-top: 10px; padding: 12px 14px; border-radius: 16px; font-size: 16px; line-height: 1.4; display: flex; gap: 10px; align-items: center; }
+.ar-banner.crit { background: rgba(60, 10, 18, .94); border: 1px solid rgba(244, 63, 94, .6); color: #ffe4e6; }
+.ar-banner.ok { background: rgba(6, 44, 34, .94); border: 1px solid rgba(52, 211, 153, .55); color: #d1fae5; }
+.ar-banner .btn { min-height: 48px; padding: 8px 14px; flex: none; }
+.ar-hint {
+  align-self: center; margin-top: 14px; padding: 10px 16px; border-radius: 999px; font-weight: 700; font-size: 17px;
+  background: rgba(5, 11, 26, .82); border: 1px solid var(--border-2); text-align: center; max-width: 92%;
+}
+.ar-actions { display: flex; gap: 10px; }
+.ar-actions .ar-btn { flex: 1; }
+.ar-card {
+  max-height: 52vh; overflow-y: auto; padding: 16px; border-radius: 22px;
+  background: rgba(8, 18, 40, .95); border: 1px solid var(--border-2);
+}
+.ar-card-head { display: flex; justify-content: space-between; gap: 10px; align-items: flex-start; }
+.ar-card-title { font-size: 23px; font-weight: 800; line-height: 1.2; }
+.ar-x { width: 44px; height: 44px; flex: none; border-radius: 12px; border: 1px solid var(--border-2); background: transparent; color: var(--text); font-size: 18px; }
+.ar-loc { font-size: 17px; font-weight: 600; margin-bottom: 10px; }
+.ar-exp { font-size: 17px; line-height: 1.5; padding: 12px 14px; border-radius: 14px; background: rgba(3, 8, 20, .6); border: 1px solid var(--border); }
