@@ -432,9 +432,58 @@ def _verify_english_finding(finding: dict, full_report: str):
             except Exception:
                 exp_en = "" # Force empty so it fails the next check and uses the fallback template
         else:
-            exp_en = f"The report says: {text_from_report}. Please discuss this with your doctor."
+            clean_text = text_from_report.strip()
+            if clean_text.endswith("."):
+                clean_text = clean_text[:-1]
+            exp_en = f"The report says: {clean_text}. Please discuss this with your doctor."
             
     finding["explanation_en"] = exp_en
+    finding["location_detail"] = _derive_location_detail(finding)
+
+def _derive_location_detail(finding: dict) -> str | None:
+    if finding.get("location_detail"):
+        return finding["location_detail"]
+    
+    zone = finding.get("body_zone") or ""
+    text = finding.get("text_from_report", "").lower()
+    
+    if zone.startswith("knee"):
+        parts = []
+        if "medial" in text: parts.append("medial")
+        elif "lateral" in text: parts.append("lateral")
+        if "anterior" in text: parts.append("anterior")
+        elif "posterior" in text: parts.append("posterior")
+        if parts: return "_".join(parts)
+        
+    elif zone.startswith("chest"):
+        if "upper lobe" in text: return "upper_lobe"
+        if "middle lobe" in text: return "middle_lobe"
+        if "lower lobe" in text: return "lower_lobe"
+        if "costophrenic angle" in text: return "costophrenic_angle"
+        
+    elif zone.endswith("spine"):
+        import re
+        match = re.search(r'\b([clt]\d{1,2}(?:-[clt]\d{1,2})?)\b', text)
+        if match: return match.group(1).upper()
+        
+    elif zone.startswith("kidney"):
+        if "upper pole" in text: return "upper_pole"
+        if "lower pole" in text: return "lower_pole"
+        if "mid" in text: return "mid"
+        
+    elif zone == "head_brain":
+        parts = []
+        if "front" in text: parts.append("frontal")
+        if "parietal" in text: parts.append("parietal")
+        if "temporal" in text: parts.append("temporal")
+        if "occipital" in text: parts.append("occipital")
+        if parts: return "_".join(parts)
+        
+    elif zone == "liver":
+        if "right lobe" in text: return "right_lobe"
+        if "left lobe" in text: return "left_lobe"
+        
+    return None
 
 def _verify_english_explanations(findings: list[dict], full_report: str):
     for f in findings:

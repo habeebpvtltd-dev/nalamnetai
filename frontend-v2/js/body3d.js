@@ -13,7 +13,8 @@
 
 /* face: [x, z] direction the spot faces (in patient coords) so the camera can
    turn the body to show it. [0, 1] = front, [0, -1] = back.
-   zoom: camera distance when focusing that zone. */
+   zoom: roughly how much body (metres × 1/0.6) stays visible around the spot
+         in the free area above the sheet — bigger = more context. */
 const ZONES = {
   head_brain:          { pos: [0, 1.655, 0.0],      face: [0, 1],  zoom: 0.85 },
   face_sinuses:        { pos: [0, 1.615, 0.085],    face: [0, 1],  zoom: 0.8 },
@@ -221,6 +222,10 @@ function findingPlacement(zoneId, side, detail) {
 
 /* Plain-language location ("lower part of the right lung"). */
 function plainLocation(zoneId, zoneEn, side, detail) {
+  const t = plainLocationRaw(zoneId, zoneEn, side, detail);
+  return t.charAt(0).toUpperCase() + t.slice(1);
+}
+function plainLocationRaw(zoneId, zoneEn, side, detail) {
   const sw = side === "left" ? "left" : side === "right" ? "right" : "";
   const region = (lv) => ({ C: "neck", T: "middle back", L: "lower back", S: "base of the spine" })[lv[0]];
   switch (detail.kind) {
@@ -230,10 +235,10 @@ function plainLocation(zoneId, zoneEn, side, detail) {
     }
     case "lung":
       if (detail.part === "costophrenic") return `Lower outer corner of the ${sw} lung, where it meets the breathing muscle`.replace("  ", " ");
-      return `${titleCase(detail.part)} part of the ${sw} lung`.replace("  ", " ");
+      return `${detail.part} part of the ${sw} lung`.replace("  ", " ");
     case "knee": {
       const words = { medial: "inner", lateral: "outer", anterior: "front", posterior: "back" };
-      return `${titleCase(detail.parts.map((p) => words[p]).join(" "))} part of the ${sw} knee`.replace("  ", " ");
+      return `${detail.parts.map((p) => words[p]).join(" ")} part of the ${sw} knee`.replace("  ", " ");
     }
     case "kidney":
       return `${detail.part === "upper" ? "Top" : "Bottom"} part of the ${sw} kidney`.replace("  ", " ");
@@ -241,7 +246,7 @@ function plainLocation(zoneId, zoneEn, side, detail) {
       const words = { frontal: "front", parietal: "top", temporal: "side", occipital: "back" };
       const w = detail.parts.map((p) => words[p]);
       const list = w.length > 1 ? w.slice(0, -1).join(", ") + " and " + w[w.length - 1] : w[0];
-      return `${titleCase(list)} of the brain${sw ? `, ${sw} side` : ""}`;
+      return `${list} of the brain${sw ? `, ${sw} side` : ""}`;
     }
     case "liver":
       return detail.part === "right" ? "Right lobe (the larger part) of the liver" : "Left lobe (the smaller part) of the liver";
@@ -413,11 +418,12 @@ const Body3D = (() => {
     body.add(ellipsoid([0.05, 1.125, 0.035], [0.045, 0.038, 0.035], organMat, 14, 10)); // stomach
     body.add(ellipsoid([0, 0.935, 0.05], [0.03, 0.026, 0.026], organMat, 12, 8));    // bladder
 
-    // Ribs
-    for (let i = 0; i < 6; i++) {
-      const y = 1.4 - i * 0.042;
+    // Ribs (dimmer than other bones so they don't dominate the chest)
+    const ribMat = fresnelMaterial(0xbfdbfe, { power: 1.4, intensity: 0.28, base: 0.02 });
+    for (let i = 0; i < 5; i++) {
+      const y = 1.39 - i * 0.045;
       const r = 0.12 + Math.sin((i / 5) * Math.PI) * 0.03 + i * 0.004;
-      const rib = new THREE.Mesh(new THREE.TorusGeometry(1, 0.035, 4, 40), boneMat);
+      const rib = new THREE.Mesh(new THREE.TorusGeometry(1, 0.03, 4, 40), ribMat);
       rib.rotation.x = Math.PI / 2 + 0.25;
       rib.position.set(0, y, 0);
       rib.scale.set(r, r * 0.65, 0.12); // local y -> depth after rotation; z squashes the tube
@@ -427,7 +433,7 @@ const Body3D = (() => {
     const pelvis = new THREE.Mesh(new THREE.TorusGeometry(1, 0.08, 6, 40), boneMat);
     pelvis.rotation.x = Math.PI / 2 - 0.35;
     pelvis.position.set(0, 0.97, 0);
-    pelvis.scale.set(0.13, 0.08, 0.35);
+    pelvis.scale.set(0.11, 0.07, 0.3);
     body.add(pelvis);
     // Spine ladder
     Object.keys(SPINE_LEVELS).forEach((k) => {
@@ -601,10 +607,17 @@ const Body3D = (() => {
     });
   }
 
+  function spanDist(span) {
+    const h = host.clientHeight || 600;
+    const visH = Math.max(160, h - insets.top - insets.bottom);
+    const tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
+    return span / (2 * tanH * (visH / h));
+  }
+
   function focusPlacement(pl) {
     const [fx, fz] = pl.face;
     const yaw = Math.atan2(-fx, fz);
-    const dist = Math.min(pl.zoom, overviewDist());
+    const dist = Math.min(spanDist(pl.zoom * 0.6), overviewDist());
     flyTo({ fx: pl.pos[0], fy: pl.pos[1], fz: pl.pos[2], yaw, dist });
   }
 

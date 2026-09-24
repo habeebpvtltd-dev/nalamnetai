@@ -70,9 +70,9 @@ window.BodyUI = (() => {
     const front = Math.cos(c.yaw) >= 0;
     $("btn-front").classList.toggle("active", front);
     $("btn-back").classList.toggle("active", !front);
-    $("orient-hint").textContent = front
-      ? "Front view · patient's left is on your right"
-      : "Back view · patient's left is on your left";
+    $("orient-hint").innerHTML = front
+      ? "<b>Front view</b><br>Patient's left is on your right"
+      : "<b>Back view</b><br>Patient's left is on your left";
     if (FLAGS.debug) $("debug-panel").textContent =
       `yaw ${(c.yaw * 57.3 % 360).toFixed(0)}° pitch ${c.pitch.toFixed(2)} dist ${c.dist.toFixed(2)}\nfocus ${c.fx.toFixed(3)}, ${c.fy.toFixed(3)}, ${c.fz.toFixed(3)}`;
   }
@@ -83,6 +83,7 @@ window.BodyUI = (() => {
     const top = $("body-top").getBoundingClientRect();
     const sheet = $("body-sheet").getBoundingClientRect();
     const t = Math.max(0, top.bottom - wrap.top) + 8;
+    $("body-wrap").style.setProperty("--top-inset", t + "px");
     const b = sheet.height ? Math.max(0, wrap.bottom - sheet.top) + 8 : 0;
     Body3D.setInsets(t, b);
   }
