@@ -448,6 +448,7 @@ window.BodyAR = !window.THREE ? null : (() => {
 
     // 3) World anchor: create it (needs an active frame), then follow ITS world pose.
     updateAnchor(frame);
+    smoothAnchorStep(performance.now());
 
     // 4) Hit-test: cosmetic reticle only. Never gates placement; errors are swallowed.
     updateReticle(frame);
@@ -593,8 +594,8 @@ window.BodyAR = !window.THREE ? null : (() => {
               return;                                   // keep the last good position
             }
           }
-          arRoot.position.copy(np);
-          arRoot.quaternion.copy(nq);                   // scale is untouched (Table/Life)
+          // Accepted: this becomes the TARGET. smoothAnchorStep() eases the body to it
+          // (ARCore's legit 10–30 cm corrections would otherwise pop in one frame).
           goodAnchorPos.copy(np); goodAnchorQuat.copy(nq); haveGoodAnchor = true;
           anchorRejects = 0;
         }
@@ -603,6 +604,40 @@ window.BodyAR = !window.THREE ? null : (() => {
       // Anchors are optional; on any error keep the fixed placement.
       anchorWanted = false;
     }
+  }
+
+  /* Critically damped smoothing of the body toward the last ACCEPTED anchor pose.
+     Position: critically damped spring (no overshoot, starts with zero velocity),
+     95% settled in ~ANCHOR_SETTLE_S. Rotation: exponential slerp with the same settle time.
+     Placement (Place/Move/Fit) sets target = current, so it stays instant. */
+  const ANCHOR_SETTLE_S = 0.2;
+  const ANCHOR_OMEGA = 4.74 / ANCHOR_SETTLE_S;      // (1+ωt)e^(-ωt) = 5% at t = settle
+  const smoothVel = new THREE.Vector3();
+  let lastSmoothT = 0;
+
+  function smoothAnchorStep(now) {
+    if (!placed || !arRoot || !haveGoodAnchor) { lastSmoothT = now; return; }
+    const dt = Math.min(0.1, Math.max(0, (now - (lastSmoothT || now)) / 1000));
+    lastSmoothT = now;
+    const pos = arRoot.position, tgt = goodAnchorPos;
+    if (pos.distanceToSquared(tgt) < 1e-12 && smoothVel.lengthSq() < 1e-12) {
+      pos.copy(tgt); smoothVel.set(0, 0, 0);            // settled: exactly on target, no creep
+    } else if (dt > 0) {
+      // Game Programming Gems 4 / Unity SmoothDamp form of a critically damped spring.
+      const x = ANCHOR_OMEGA * dt;
+      const e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
+      for (const k of ["x", "y", "z"]) {
+        const change = pos[k] - tgt[k];
+        const temp = (smoothVel[k] + ANCHOR_OMEGA * change) * dt;
+        smoothVel[k] = (smoothVel[k] - ANCHOR_OMEGA * temp) * e;
+        let out = tgt[k] + (change + temp) * e;
+        if ((tgt[k] - pos[k] > 0) === (out > tgt[k])) { out = tgt[k]; smoothVel[k] = 0; }   // no overshoot
+        pos[k] = out;
+      }
+    }
+    const q = arRoot.quaternion;
+    if (q.angleTo(goodAnchorQuat) < 1e-6) q.copy(goodAnchorQuat);
+    else if (dt > 0) q.slerp(goodAnchorQuat, 1 - Math.exp(-3 * dt / ANCHOR_SETTLE_S));
   }
 
   function rejectAnchorPose(np, jump, turn) {
@@ -720,6 +755,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     // Baseline for the anchor sanity guard: the anchor is created at exactly this pose.
     goodAnchorPos.copy(arRoot.position); goodAnchorQuat.copy(arRoot.quaternion);
     haveGoodAnchor = true; anchorRejects = 0;
+    smoothVel.set(0, 0, 0);          // placement is instant: target == current, no easing
     arRoot.updateMatrixWorld(true);
     placed = true;
     pendingPlace = false;
