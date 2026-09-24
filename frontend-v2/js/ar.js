@@ -49,7 +49,16 @@ window.BodyAR = !window.THREE ? null : (() => {
   let anchor = null;              // XRAnchor pinning the placed body to the world (if supported)
   let anchorWanted = false;       // create an anchor on the next XR frame (needs an active frame)
   const PLACE_DEBOUNCE_MS = 400;
-  const PLACE_DIST = 1.2, PLACE_DROP = 0.9;   // metres in front / below the viewer's eyes
+  // Placement distance per size: Life is placed further away so the whole 1.65 m figure
+  // fits in the phone's view without stepping back. Base is 0.9 m below the viewer's eyes.
+  const PLACE_DIST = { table: 1.2, life: 2.3 }, PLACE_DROP = 0.9;
+  const FOCUS_MS = 600;           // eased tap-to-focus / return
+  const FOCUS_REGION = 0.35;      // metres of body shown around a focused finding
+  let camVFov = THREE.MathUtils.degToRad(50);   // phone camera vertical FOV (read from XR views)
+  let rig = null;                 // child of arRoot: temporary focus transform (identity when idle)
+  let focusAnim = null;           // { from:{p,q,s}, to:{p,q,s}, t0 } eased inside step()
+  let focusedIdx = -1;
+  let pendingMode = "place";      // what a pose-less tap should do when a pose arrives
   const t0 = performance.now();
 
   /* ---------- support check ---------- */
@@ -158,7 +167,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     scaleLabels();
   }
   function scaleLabels() {
-    const w = LABEL_W[size] / SCALE[size];  // sprites live inside the scaled body
+    const w = LABEL_W[size] / (SCALE[size] * (rig ? rig.scale.x : 1));  // sprites live inside the scaled body
     labelSprites.forEach((sp) => sp.scale.set(w, w / 4, 1));
   }
   function removeLabels() {
@@ -208,8 +217,10 @@ window.BodyAR = !window.THREE ? null : (() => {
       <div class="ar-bottom">
         <div class="ar-card" id="ar-card" hidden></div>
         <div class="ar-actions" id="ar-actions" hidden>
+          ${items.length > 1 ? `<button class="ar-btn" id="ar-prev" aria-label="Previous finding">‹ Prev</button>` : ""}
+          <button class="ar-btn" id="ar-fit" aria-label="Fit whole body in view">⤢ Fit</button>
           <button class="ar-btn" id="ar-move">↻ Move</button>
-          ${items.length ? `<button class="ar-btn primary" id="ar-next">Next finding ›</button>` : ""}
+          ${items.length ? `<button class="ar-btn primary" id="ar-next">Next ›</button>` : ""}
         </div>
       </div>`;
   }
@@ -218,10 +229,13 @@ window.BodyAR = !window.THREE ? null : (() => {
     $("ar-exit").onclick = exit;
     $("ar-overlay").querySelectorAll(".ar-seg button").forEach((b) => (b.onclick = () => setSize(b.dataset.size)));
     // Placement is driven ONLY by these real DOM buttons (never by hit-test or screen taps).
-    $("ar-place-btn").onclick = requestPlace;
-    $("ar-move").onclick = () => { hideCard(); requestPlace(); };
+    $("ar-place-btn").onclick = () => requestPlace("place");
+    $("ar-move").onclick = () => { hideCard(); requestPlace("place"); };
+    $("ar-fit").onclick = () => { hideCard(); requestPlace("fit"); };
     const nx = $("ar-next");
     if (nx) nx.onclick = () => select(items.length ? (sel + 1 + items.length) % items.length : -1);
+    const pv = $("ar-prev");
+    if (pv) pv.onclick = () => select(items.length ? (Math.max(sel, 0) - 1 + items.length) % items.length : -1);
     const dc = $("ar-debug-copy");
     if (dc) dc.onclick = copyDebug;
   }
@@ -242,8 +256,16 @@ window.BodyAR = !window.THREE ? null : (() => {
   function setSize(s) {
     size = s;
     $("ar-overlay").querySelectorAll(".ar-seg button").forEach((b) => b.classList.toggle("active", b.dataset.size === s));
+    clearFocus(true);
     if (arRoot) { arRoot.scale.setScalar(SCALE[s]); arRoot.updateMatrixWorld(true); }
     scaleLabels();
+    // Rescaling in place keeps the anchor; if a Life-size figure is now too close to see
+    // whole, point the user at "Fit" rather than silently moving it.
+    if (placed && s === "life" && hasPose && arRoot && viewerPos.distanceTo(arRoot.position) < 2.0) {
+      const h = $("ar-hint");
+      if (h) { h.hidden = false; h.textContent = "Tap ⤢ Fit to see the whole body"; }
+      const f = $("ar-fit"); if (f) f.classList.add("pulse");
+    }
   }
 
   const SEV_WORD = { severe: "Severe", moderate: "Moderate", mild: "Mild", unknown: "Not stated" };
@@ -273,6 +295,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     const c = $("ar-card");
     if (c) c.hidden = true;
     stopAnyAudio();
+    if (focusedIdx >= 0) unfocus();
   }
 
   async function listen(it) {
@@ -296,6 +319,81 @@ window.BodyAR = !window.THREE ? null : (() => {
     labelSprites.forEach(drawLabel);
     showCard(items[i]);
     updateHint();
+    focusOn(i);
+  }
+
+  /* ---------- tap-to-focus (AR version of the 3D fly-to-finding) ----------
+     The phone is the camera, so instead the BODY eases (~0.6 s) to sit in front of the
+     viewer, turned so the finding faces them and scaled so ~35 cm around it fills the view.
+     The target is computed ONCE from the viewer pose at tap time, as an offset of `rig`
+     under the anchored arRoot, so the result is world-fixed and does not follow the phone. */
+  const _m1 = new THREE.Matrix4(), _m2 = new THREE.Matrix4(), _vA = new THREE.Vector3();
+  function rigNow() { return { p: rig.position.clone(), q: rig.quaternion.clone(), s: rig.scale.x }; }
+  const IDENTITY = () => ({ p: new THREE.Vector3(), q: new THREE.Quaternion(), s: 1 });
+
+  function animateRig(to) {
+    if (!rig) return;
+    focusAnim = { from: rigNow(), to, t0: performance.now() };
+  }
+
+  function focusOn(i) {
+    try {
+      const m = I.markers.find((x) => x.index === i);
+      const pl = items[i] && items[i].placement;
+      if (!placed || !rig || !hasPose || !m || !pl) { if (focusedIdx >= 0) unfocus(); return; }
+      arRoot.updateMatrixWorld(true);
+      const sRoot = arRoot.scale.x;
+      // Scale: show FOCUS_REGION metres around the finding; never shrink below current size.
+      const span = (pl.zoom || 1) * 0.6;                   // body units around the spot
+      const sWorld = Math.max(sRoot, FOCUS_REGION / span);
+      // Distance so that region fills ~60% of the camera's vertical view.
+      const dist = Math.min(1.4, Math.max(0.45, (span * sWorld) / (2 * Math.tan(camVFov / 2)) / 0.6));
+      // Where the finding should end up: straight ahead, a little below eye level.
+      const yaw = new THREE.Euler().setFromQuaternion(viewerQuat, "YXZ").y;
+      const fwd = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const target = viewerPos.clone().addScaledVector(fwd, dist); target.y -= 0.08;
+      // Turn so the finding's face direction points back at the viewer.
+      const [fx, fz] = pl.face || [0, 1];
+      const toViewer = fwd.clone().negate();
+      const psi = Math.atan2(toViewer.x, toViewer.z) - Math.atan2(fx, fz);
+      const qW = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), psi);
+      // Marker position in rig space = body offset + marker offset (body units).
+      const mInRig = I.body.position.clone().add(m.group.position);
+      const tW = target.clone().sub(mInRig.clone().multiplyScalar(sWorld).applyQuaternion(qW));
+      // Desired rig WORLD transform -> rig LOCAL (relative to the anchored arRoot).
+      _m1.compose(tW, qW, new THREE.Vector3(sWorld, sWorld, sWorld));
+      _m2.copy(arRoot.matrixWorld).invert().multiply(_m1);
+      const p = new THREE.Vector3(), q = new THREE.Quaternion(), sc = new THREE.Vector3();
+      _m2.decompose(p, q, sc);
+      focusedIdx = i;
+      animateRig({ p, q, s: sc.x });
+    } catch (e) {
+      console.warn("AR focus failed", e);
+    }
+  }
+
+  function unfocus() {
+    focusedIdx = -1;
+    animateRig(IDENTITY());
+  }
+
+  // Instant reset (used before Move/Fit/size switch so placement math starts clean).
+  function clearFocus(instant) {
+    focusedIdx = -1;
+    focusAnim = null;
+    if (rig && instant) { rig.position.set(0, 0, 0); rig.quaternion.identity(); rig.scale.setScalar(1); rig.updateMatrixWorld(true); scaleLabels(); }
+  }
+
+  function stepFocus(now) {
+    if (!focusAnim || !rig) return;
+    const k = Math.min(1, (now - focusAnim.t0) / FOCUS_MS);
+    const e = k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2;   // easeInOutCubic
+    const { from, to } = focusAnim;
+    rig.position.lerpVectors(from.p, to.p, e);
+    rig.quaternion.copy(from.q).slerp(to.q, e);
+    rig.scale.setScalar(from.s + (to.s - from.s) * e);
+    scaleLabels();
+    if (k >= 1) focusAnim = null;
   }
 
   /* ---------- XR loop ---------- */
@@ -306,13 +404,18 @@ window.BodyAR = !window.THREE ? null : (() => {
 
   /* One XR frame. After placement NOTHING here moves the body relative to the viewer:
      the viewer pose is only cached for the next "Tap to place"/"Move". The body's
-     transform changes only from (a) placeInFront() on a button tap, (b) setSize()
-     scale, or (c) its world anchor, which ARCore keeps fixed to the real room. */
+     transform changes only from (a) placeInFront() on a button tap (Place/Move/Fit),
+     (b) setSize() scale, (c) its world anchor, which ARCore keeps fixed to the real room,
+     or (d) the eased tap-to-focus offset on `rig`, whose target is computed once at tap time. */
   function step(frame) {
     // 1) Viewer pose (used only for the next placement). Null = tracking hiccup: keep going.
     try {
       const pose = frame.getViewerPose(refSpace);
       if (DEBUG) dbg.pose = pose;
+      if (pose && pose.views && pose.views[0] && pose.views[0].projectionMatrix) {
+        const m5 = pose.views[0].projectionMatrix[5];
+        if (m5 > 0.2) camVFov = 2 * Math.atan(1 / m5);    // real camera vertical FOV
+      }
       if (pose) {
         const p = pose.transform.position, o = pose.transform.orientation;
         setViewerPose(p, o);
@@ -324,7 +427,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     }
 
     // 2) A tap that arrived without a pose is retried here, every frame, until one arrives.
-    if (pendingPlace && hasPose) placeInFront();
+    if (pendingPlace && hasPose) doPlace(pendingMode);
 
     // 3) World anchor: create it (needs an active frame), then follow ITS world pose.
     updateAnchor(frame);
@@ -334,8 +437,10 @@ window.BodyAR = !window.THREE ? null : (() => {
 
     // 5) Animate + render.
     try {
+      stepFocus(performance.now());
       const t = (performance.now() - t0) / 1000;
-      const boost = MARKER_BOOST[size];
+      const rk = rig ? rig.scale.x : 1;   // when focused (scaled up), drop the table-size boost
+      const boost = { core: Math.max(1, MARKER_BOOST[size].core / rk), halo: Math.max(1, MARKER_BOOST[size].halo / rk) };
       I.markers.forEach((m) => {
         const k = m.sel ? 1.8 : 1.25;
         const s = Math.sin(t * 3.2 + m.phase);
@@ -381,6 +486,8 @@ window.BodyAR = !window.THREE ? null : (() => {
         I.body.matrixWorld.decompose(_v, _q, _s);
         lines.push(`scale: arRoot=${arRoot.scale.x.toFixed(4)}  mesh(world)=${_s.x.toFixed(4)}  → ${(_s.x * modelH).toFixed(3)} m tall (modelH ${modelH.toFixed(3)})`);
         lines.push(`body world pos: ${f3(_v.x, _v.y, _v.z)}   visible=${arRoot.visible}`);
+        const vd = dbg.pose ? Math.hypot(arRoot.position.x - viewerPos.x, arRoot.position.z - viewerPos.z) : 0;
+        lines.push(`placed dist: ${vd.toFixed(2)} m   cam vFOV: ${THREE.MathUtils.radToDeg(camVFov).toFixed(1)}°   focus: ${focusedIdx >= 0 ? "#" + (focusedIdx + 1) : "none"}${focusAnim ? " (easing)" : ""} rig×${rig ? rig.scale.x.toFixed(3) : "-"}`);
         // Frame-to-frame change of the body's world transform (should be ~0 when untouched).
         if (dbg.lastPos) {
           dbg.delta = _v.distanceTo(dbg.lastPos);
@@ -518,12 +625,14 @@ window.BodyAR = !window.THREE ? null : (() => {
 
   /* ---------- placement (never depends on hit-test) ---------- */
   // Called by the "Tap to place body" and "Move" buttons.
-  function requestPlace() {
+  function requestPlace(mode = "place") {
     const now = performance.now();
     if (now - lastPlaceTap < PLACE_DEBOUNCE_MS) return false;   // shaky double-tap
     lastPlaceTap = now;
     if (!arRoot) return false;
-    if (hasPose) return placeInFront();
+    const f = $("ar-fit"); if (f) f.classList.remove("pulse");
+    pendingMode = mode;
+    if (hasPose) return doPlace(mode);
     // No pose right now (tracking hiccup / first frame): the XR loop retries every frame.
     pendingPlace = true;
     updateHint();
@@ -533,13 +642,25 @@ window.BodyAR = !window.THREE ? null : (() => {
   // 1.2 m in front of the viewer along their horizontal heading, 0.9 m below eye level,
   // turned to face the viewer. Uses yaw only, so it works even when the phone points
   // straight down at a table (where a flattened forward vector would be ~zero).
-  function placeInFront() {
+  function doPlace(mode) {
+    if (mode === "fit") {
+      // Whole body in view: distance from the real camera FOV (25% margin), body centred
+      // slightly below eye level. Scale (Table/Life) is kept.
+      const H = modelH * SCALE[size];
+      const dist = Math.max(0.5, (H * 1.25) / (2 * Math.tan(camVFov / 2)));
+      return placeInFront(dist, H * 0.55);
+    }
+    return placeInFront(PLACE_DIST[size], PLACE_DROP);
+  }
+
+  function placeInFront(dist = PLACE_DIST[size], drop = PLACE_DROP) {
+    clearFocus(true);
     const yaw = new THREE.Euler().setFromQuaternion(viewerQuat, "YXZ").y;
     const fwdX = -Math.sin(yaw), fwdZ = -Math.cos(yaw);
     const pos = new THREE.Vector3(
-      viewerPos.x + fwdX * PLACE_DIST,
-      viewerPos.y - PLACE_DROP,
-      viewerPos.z + fwdZ * PLACE_DIST
+      viewerPos.x + fwdX * dist,
+      viewerPos.y - drop,
+      viewerPos.z + fwdZ * dist
     );
     arRoot.position.copy(pos);
     arRoot.rotation.set(0, Math.atan2(viewerPos.x - pos.x, viewerPos.z - pos.z), 0);
@@ -590,8 +711,10 @@ window.BodyAR = !window.THREE ? null : (() => {
     arRoot = new THREE.Group();
     arRoot.visible = false;
     I.scene.add(arRoot);
+    rig = new THREE.Group();
+    arRoot.add(rig);
     I.pivot.remove(I.body);
-    arRoot.add(I.body);
+    rig.add(I.body);
     I.body.position.set(0, 0, 0);
     fitModel();
     reticle = buildReticle();
@@ -616,7 +739,8 @@ window.BodyAR = !window.THREE ? null : (() => {
         I.renderer.xr.enabled = false;
         if (blendSaved.length) setArBlending(false);
         removeLabels();
-        if (arRoot) { arRoot.remove(I.body); I.scene.remove(arRoot); }
+        if (I.body.parent && I.body.parent !== I.pivot) I.body.parent.remove(I.body);
+        if (arRoot) I.scene.remove(arRoot);
         if (I.body.parent !== I.pivot) I.pivot.add(I.body);
         if (reticle) I.scene.remove(reticle);
         Body3D.highlight(null);
@@ -632,7 +756,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       ov.hidden = true;
       ov.innerHTML = "";
       document.documentElement.classList.remove("in-ar");
-      session = null; arRoot = null; reticle = null; refSpace = null;
+      session = null; arRoot = null; reticle = null; refSpace = null; rig = null; focusAnim = null; focusedIdx = -1;
       resetPlacementState();
       cleaning = false;
       window.BodyUI && BodyUI.afterAR && BodyUI.afterAR();
@@ -740,7 +864,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       // then run the same per-frame retry the real loop runs.
       frame(pose) {
         if (pose) setViewerPose(pose.position, pose.orientation); else hasPose = false;
-        if (pendingPlace && hasPose) placeInFront();
+        if (pendingPlace && hasPose) doPlace(pendingMode);
       },
       // Run the REAL per-frame step with a fake XRFrame (no device needed).
       step(fakeFrame) { step(fakeFrame); },
@@ -758,7 +882,8 @@ window.BodyAR = !window.THREE ? null : (() => {
       },
       setAnchor(a) { anchor = a; },
       get state() {
-        return { placed, pendingPlace, hasPose, arRoot, bodyInArRoot: !!(arRoot && I && I.body.parent === arRoot) };
+        return { placed, pendingPlace, hasPose, arRoot, rig, focusedIdx, focusAnimating: !!focusAnim, camVFovDeg: THREE.MathUtils.radToDeg(camVFov),
+          bodyInArRoot: !!(arRoot && I && rig && I.body.parent === rig && rig.parent === arRoot) };
       },
       select: (i) => select(i),
       unstage: () => cleanup(),

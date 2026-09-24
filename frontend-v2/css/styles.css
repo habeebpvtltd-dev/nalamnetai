@@ -574,3 +574,7 @@ details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; alig
 }
 .ar-debug pre { margin: 0; font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #86efac; white-space: pre-wrap; word-break: break-word; }
 .ar-debug button { pointer-events: auto; margin-top: 6px; min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #4ade80; background: #052e16; color: #bbf7d0; font-weight: 700; font-size: 13px; }
+/* AR action row: Prev · Fit · Move · Next fit on a 390 px phone, each >= 48 px tall */
+.ar-actions .ar-btn { padding: 0 8px; min-width: 0; font-size: 15px; }
+.ar-btn.pulse { animation: arPulse 1.2s ease-in-out infinite; border-color: var(--teal); }
+@keyframes arPulse { 50% { box-shadow: 0 0 0 6px rgba(45, 212, 191, .35); } }
