@@ -24,6 +24,13 @@ window.BodyAR = !window.THREE ? null : (() => {
   // ?anchors=0 turns them off (fixed transform in 'local' space) as a venue safety valve.
   const ANCHORS_ON = !/[?&]anchors=0\b/.test(window.location.search);
   const PICK_ANGLE = THREE.MathUtils ? THREE.MathUtils.degToRad(8) : 0.14;
+  // ?ardebug=1: live on-screen diagnostics (read-only; never changes placement/scale/anchor).
+  const DEBUG = /[?&]ardebug=1\b/.test(window.location.search);
+  const dbg = {
+    pose: null, hits: 0, anchorErr: "", anchorMade: 0, frames: 0, lostFrames: 0,
+    lastPos: null, lastQuat: null, delta: 0, rotDelta: 0, maxDelta1s: 0, deltas: [],
+    fpsN: 0, fpsT: 0, fps: 0, lastSampleT: 0, history: [], lastText: "",
+  };
 
   let session = null, hitSource = null, refSpace = null;
   let I = null;                // Body3D internals
@@ -197,7 +204,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       ${banner}
       <button id="ar-place-btn" class="ar-place-btn" type="button">Tap to place body</button>
       <div class="ar-hint" id="ar-hint" hidden></div>
-      ${ window.location.search.includes('ardebug=1') ? '<div id="ar-debug" style="position:absolute;top:100px;left:20px;color:lime;font-size:18px;font-weight:bold;z-index:9999;text-shadow: 1px 1px 2px black;">hits: 0</div>' : '' }
+      ${DEBUG ? `<div id="ar-debug" class="ar-debug"><pre id="ar-debug-text">AR debug: waiting for first frame…</pre><button id="ar-debug-copy" type="button">Copy debug log</button></div>` : ""}
       <div class="ar-bottom">
         <div class="ar-card" id="ar-card" hidden></div>
         <div class="ar-actions" id="ar-actions" hidden>
@@ -215,6 +222,8 @@ window.BodyAR = !window.THREE ? null : (() => {
     $("ar-move").onclick = () => { hideCard(); requestPlace(); };
     const nx = $("ar-next");
     if (nx) nx.onclick = () => select(items.length ? (sel + 1 + items.length) % items.length : -1);
+    const dc = $("ar-debug-copy");
+    if (dc) dc.onclick = copyDebug;
   }
 
   function updateHint() {
@@ -303,6 +312,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     // 1) Viewer pose (used only for the next placement). Null = tracking hiccup: keep going.
     try {
       const pose = frame.getViewerPose(refSpace);
+      if (DEBUG) dbg.pose = pose;
       if (pose) {
         const p = pose.transform.position, o = pose.transform.orientation;
         setViewerPose(p, o);
@@ -339,6 +349,92 @@ window.BodyAR = !window.THREE ? null : (() => {
     } catch (e) {
       fail(e);
     }
+    if (DEBUG) debugFrame(frame);
+  }
+
+  /* ---------- ?ardebug=1 live diagnostics (reads state only; changes nothing) ---------- */
+  const _v = new THREE.Vector3(), _s = new THREE.Vector3(), _q = new THREE.Quaternion();
+  const f3 = (x, y, z) => `${x.toFixed(3)}, ${y.toFixed(3)}, ${z.toFixed(3)}`;
+
+  function trackingState(pose) {
+    if (!pose) return "NOT TRACKING (no viewer pose)";
+    if (pose.emulatedPosition) return "LIMITED (orientation only)";
+    return "TRACKING";
+  }
+
+  function debugFrame(frame) {
+    try {
+      const now = performance.now();
+      dbg.frames++;
+      dbg.fpsN++;
+      if (now - dbg.fpsT >= 1000) { dbg.fps = dbg.fpsN * 1000 / (now - dbg.fpsT || 1); dbg.fpsN = 0; dbg.fpsT = now; }
+      if (!dbg.pose) dbg.lostFrames++;
+
+      const lines = [];
+      lines.push(`frame ${dbg.frames}  ${dbg.fps.toFixed(0)} fps   size=${size}  placed=${placed}${pendingPlace ? " (pending)" : ""}`);
+      lines.push(`tracking: ${trackingState(dbg.pose)}   lost frames: ${dbg.lostFrames}`);
+      if (dbg.pose) { const p = dbg.pose.transform.position; lines.push(`viewer: ${f3(p.x, p.y, p.z)}`); }
+
+      if (arRoot && I) {
+        // The scale actually applied to the mesh = world scale of the body (arRoot × body).
+        I.body.updateMatrixWorld(true);
+        I.body.matrixWorld.decompose(_v, _q, _s);
+        lines.push(`scale: arRoot=${arRoot.scale.x.toFixed(4)}  mesh(world)=${_s.x.toFixed(4)}  → ${(_s.x * modelH).toFixed(3)} m tall (modelH ${modelH.toFixed(3)})`);
+        lines.push(`body world pos: ${f3(_v.x, _v.y, _v.z)}   visible=${arRoot.visible}`);
+        // Frame-to-frame change of the body's world transform (should be ~0 when untouched).
+        if (dbg.lastPos) {
+          dbg.delta = _v.distanceTo(dbg.lastPos);
+          dbg.rotDelta = THREE.MathUtils.radToDeg(_q.angleTo(dbg.lastQuat));
+        } else { dbg.lastPos = new THREE.Vector3(); dbg.lastQuat = new THREE.Quaternion(); }
+        dbg.lastPos.copy(_v); dbg.lastQuat.copy(_q);
+        dbg.deltas.push({ t: now, d: dbg.delta });
+        while (dbg.deltas.length && now - dbg.deltas[0].t > 1000) dbg.deltas.shift();
+        dbg.maxDelta1s = dbg.deltas.reduce((m, x) => Math.max(m, x.d), 0);
+        lines.push(`Δ per frame: ${(dbg.delta * 1000).toFixed(2)} mm, ${dbg.rotDelta.toFixed(3)}°   max Δ last 1s: ${(dbg.maxDelta1s * 1000).toFixed(2)} mm`);
+      } else {
+        lines.push(`body: not in AR scene yet`);
+      }
+
+      // Anchor: raw pose straight from ARCore (not our copy of it).
+      if (anchor) {
+        const tracked = !!(frame.trackedAnchors && frame.trackedAnchors.has(anchor));
+        let raw = "no pose";
+        try { const ap = frame.getPose(anchor.anchorSpace, refSpace); if (ap) { const p = ap.transform.position; raw = f3(p.x, p.y, p.z); } } catch (e) { raw = "getPose error"; }
+        lines.push(`anchor: ACTIVE  tracked=${tracked}  raw pose: ${raw}`);
+      } else {
+        lines.push(`anchor: none  (enabled=${ANCHORS_ON}, wanted=${anchorWanted}, created=${dbg.anchorMade}, api=${typeof frame.createAnchor === "function"})`);
+      }
+      if (dbg.anchorErr) lines.push(`anchor error: ${dbg.anchorErr}`);
+      const feats = session && session.enabledFeatures ? Array.from(session.enabledFeatures).join(",") : "n/a";
+      lines.push(`hit-test: ${hitSource ? "on" : "off"}  hits=${dbg.hits}   features: ${feats}`);
+
+      const text = lines.join("\n");
+      dbg.lastText = text;
+      // Twice a second, keep a compact history line for "Copy debug log" (last 30 s).
+      if (now - dbg.lastSampleT >= 500) {
+        dbg.lastSampleT = now;
+        const pos = arRoot && I ? f3(_v.x, _v.y, _v.z) : "-";
+        dbg.history.push(`${((now - t0) / 1000).toFixed(1)}s trk=${dbg.pose ? (dbg.pose.emulatedPosition ? "LIM" : "OK") : "LOST"} pos=${pos} sc=${arRoot ? arRoot.scale.x.toFixed(4) : "-"} dMax1s=${(dbg.maxDelta1s * 1000).toFixed(1)}mm anc=${anchor ? "Y" : "N"}`);
+        if (dbg.history.length > 60) dbg.history.shift();
+      }
+      const el = $("ar-debug-text");
+      if (el) el.textContent = text;
+    } catch (e) {
+      const el = $("ar-debug-text");
+      if (el) el.textContent = "debug error: " + e.message;
+    }
+  }
+
+  async function copyDebug() {
+    const text = `${dbg.lastText}\n--- last 30 s (2/s) ---\n${dbg.history.join("\n")}\nUA: ${navigator.userAgent}`;
+    try { await navigator.clipboard.writeText(text); toast("Debug log copied"); }
+    catch (e) { toast("Copy failed — take a screenshot instead"); }
+  }
+
+  function resetDebug() {
+    Object.assign(dbg, { pose: null, hits: 0, anchorErr: "", anchorMade: 0, frames: 0, lostFrames: 0,
+      lastPos: null, lastQuat: null, delta: 0, rotDelta: 0, maxDelta1s: 0, deltas: [],
+      fpsN: 0, fpsT: performance.now(), fps: 0, lastSampleT: 0, history: [], lastText: "" });
   }
 
   function setViewerPose(p, o) {
@@ -355,8 +451,8 @@ window.BodyAR = !window.THREE ? null : (() => {
         const p = arRoot.position, q = arRoot.quaternion;
         const made = frame.createAnchor(new XRRigidTransform({ x: p.x, y: p.y, z: p.z }, { x: q.x, y: q.y, z: q.z, w: q.w }), refSpace);
         if (made && made.then) {
-          made.then((a) => { if (placed && arRoot) anchor = a; else { try { a.delete(); } catch (e) {} } })
-              .catch(() => { anchor = null; });   // unsupported: keep the fixed transform
+          made.then((a) => { if (DEBUG) dbg.anchorMade++; if (placed && arRoot) anchor = a; else { try { a.delete(); } catch (e) {} } })
+              .catch((e) => { anchor = null; if (DEBUG) dbg.anchorErr = String((e && e.message) || e); });   // unsupported: keep the fixed transform
         }
       }
       if (anchor && frame.trackedAnchors && frame.trackedAnchors.has(anchor)) {
@@ -384,8 +480,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     try {
       if (placed || !hitSource) { reticle.visible = false; return; }
       const hits = frame.getHitTestResults(hitSource);
-      const dbg = $("ar-debug");
-      if (dbg) dbg.textContent = `hits: ${hits.length}`;
+      if (DEBUG) dbg.hits = hits.length;
       const hp = hits.length ? hits[0].getPose(refSpace) : null;
       if (hp) { reticle.matrix.fromArray(hp.transform.matrix); reticle.visible = true; }
       else reticle.visible = false;
@@ -583,6 +678,7 @@ window.BodyAR = !window.THREE ? null : (() => {
     if (!I || !navigator.xr) { toast("AR is not available on this phone"); return; }
     items = its || []; report = rep || null; size = "table"; failed = false;
     resetPlacementState();
+    resetDebug();
     const ov = $("ar-overlay");
     ov.innerHTML = overlayHtml();
     ov.hidden = false;
@@ -636,6 +732,7 @@ window.BodyAR = !window.THREE ? null : (() => {
       stage({ items: its = [], report: rep = null, size: sz = "table" } = {}) {
         I = Body3D._internals(); items = its; report = rep; size = sz;
         resetPlacementState();
+        resetDebug();
         const ov = $("ar-overlay"); ov.innerHTML = overlayHtml(); ov.hidden = false; bindOverlay();
         enterScene(); updateHint();
       },

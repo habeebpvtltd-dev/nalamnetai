@@ -566,3 +566,11 @@ details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; alig
   pointer-events: auto; z-index: 2; touch-action: manipulation;
 }
 .ar-place-btn:active { transform: translateX(-50%) scale(.97); }
+/* ?ardebug=1 live diagnostics panel (does not block AR taps except its button). */
+.ar-debug {
+  position: absolute; left: 8px; right: 8px; top: calc(72px + env(safe-area-inset-top, 0px)); z-index: 3;
+  background: rgba(0, 0, 0, .72); border: 1px solid rgba(74, 222, 128, .5); border-radius: 10px;
+  padding: 6px 8px; pointer-events: none !important;
+}
+.ar-debug pre { margin: 0; font: 11px/1.35 ui-monospace, Menlo, Consolas, monospace; color: #86efac; white-space: pre-wrap; word-break: break-word; }
+.ar-debug button { pointer-events: auto; margin-top: 6px; min-height: 40px; padding: 0 12px; border-radius: 8px; border: 1px solid #4ade80; background: #052e16; color: #bbf7d0; font-weight: 700; font-size: 13px; }
