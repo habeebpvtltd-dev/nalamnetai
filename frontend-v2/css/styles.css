@@ -336,11 +336,9 @@ button { cursor: pointer; }
 .mlabel small { color: var(--text-2); font-size: 12.5px; }
 .mlabel.sel { border-color: currentColor; box-shadow: 0 0 18px -4px currentColor; }
 .mlabel .sw { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; background: currentColor; }
-.mlabel.dim { opacity: .7; }
-.mlabel .brief { display: none; }
-.mlabel.dim .brief { display: inline; }
-.mlabel.dim .full, .mlabel.dim small { display: none; }
-.mlabel.dim { padding: 4px 9px; font-size: 13px; }
+.body-labels .mlabel { pointer-events: none; }
+/* Only the selected finding shows a label; others are just glowing markers. */
+.mlabel:not(.debug):not(.sel) { display: none; }
 .mlabel.debug { padding: 1px 5px; font-size: 10px; border-radius: 6px; background: rgba(0, 0, 0, .7); pointer-events: none; }
 .mlabel.debug::before { display: none; }
 .mlabel.debug.detail { color: #f0abfc; border-color: rgba(240, 171, 252, .5); }
@@ -359,27 +357,42 @@ button { cursor: pointer; }
 .banner-ok { background: rgba(6, 44, 34, .85); border: 1px solid rgba(52, 211, 153, .5); color: #d1fae5; backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 .banner-info { background: rgba(10, 22, 48, .85); border: 1px solid var(--border-2); color: var(--text); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); }
 
-.face-toggle {
-  position: absolute; right: 10px; top: calc(var(--top-inset, 140px) + 4px); z-index: 4;
-  display: flex; flex-direction: column; border-radius: 14px; padding: 3px; gap: 3px;
+/* Reserved row under the top card: hint chip (left) + Front/Back (right).
+   The camera frames the body BELOW this row, so neither covers the body. */
+.view-row {
+  position: absolute; left: 10px; right: 10px; top: var(--top-row, 130px); height: 54px; z-index: 4;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px; pointer-events: none;
 }
-.face-toggle button { min-width: 64px; min-height: 48px; border: 0; background: transparent; border-radius: 11px; color: var(--text-2); font-weight: 700; font-size: 15px; }
+.face-toggle { display: flex; border-radius: 16px; padding: 3px; gap: 3px; flex: none; pointer-events: auto; }
+.face-toggle button { min-width: 64px; min-height: 48px; border: 0; background: transparent; border-radius: 13px; color: var(--text-2); font-weight: 700; font-size: 15px; }
 .face-toggle button.active { background: var(--grad); color: #04121f; }
 .orient-hint {
-  position: absolute; left: 10px; top: calc(var(--top-inset, 140px) + 4px); z-index: 4; max-width: 150px;
-  font-size: 13px; line-height: 1.3; color: var(--text-2); padding: 6px 10px; border-radius: 10px;
-  background: rgba(5, 11, 26, .6); border: 1px solid var(--border); pointer-events: none;
+  pointer-events: none; color: var(--text-2); border-radius: 10px; border: 1px solid var(--border);
+  background: rgba(5, 11, 26, .78); overflow: hidden; min-width: 0;
+  transition: opacity .35s, font-size .35s, padding .35s, max-width .35s;
 }
+.orient-hint.full { font-size: 13.5px; line-height: 1.3; padding: 6px 10px; max-width: 220px; }
+.orient-hint.chip { font-size: 12.5px; line-height: 26px; height: 28px; padding: 0 10px; max-width: 140px; white-space: nowrap; text-overflow: ellipsis; }
 .sheet {
   position: absolute; left: 8px; right: 8px; bottom: 8px; z-index: 6; border-radius: 24px;
-  max-height: 42%; display: flex; flex-direction: column; overflow: hidden;
+  display: flex; flex-direction: column; overflow: hidden;
+  max-height: 42%; transition: max-height .32s var(--ease);
 }
-.sheet.collapsed .sheet-body > :not(.sheet-peek) { display: none; }
-.sheet-handle { flex: none; height: 26px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
-.sheet-handle span { width: 44px; height: 5px; border-radius: 3px; background: var(--border-2); }
-.sheet-body { overflow-y: auto; padding: 0 16px 16px; overscroll-behavior: contain; touch-action: pan-y; }
-.sheet-peek { display: flex; align-items: center; gap: 10px; }
-.sheet-peek .count { flex: 1; font-size: 15px; color: var(--text-2); font-weight: 600; }
+.sheet[data-state="collapsed"] { max-height: 116px; }
+.sheet[data-state="collapsed"] .sheet-body { display: none; }
+.sheet[data-state="full"] { max-height: calc(100% - 16px); }
+.sheet-head { flex: none; padding: 4px 12px 8px; touch-action: none; user-select: none; -webkit-user-select: none; }
+.sheet-row-a { position: relative; display: flex; align-items: center; height: 48px; gap: 8px; }
+.sheet-row-a .count { flex: 1; font-size: 15px; color: var(--text-2); font-weight: 600; padding-left: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sheet-grab { position: absolute; left: 50%; top: 0; transform: translateX(-50%); width: 72px; height: 48px; border: 0; background: transparent; display: flex; align-items: center; justify-content: center; }
+.sheet-grab span { width: 44px; height: 5px; border-radius: 3px; background: var(--border-2); }
+.sheet-chev { width: 48px; height: 48px; flex: none; border-radius: 14px; border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text); display: flex; align-items: center; justify-content: center; }
+.sheet-chev svg { width: 22px; height: 22px; transition: transform .3s var(--ease); }
+.sheet[data-state="collapsed"] .sheet-chev svg { transform: rotate(180deg); }
+.sheet-row-b { display: flex; align-items: center; gap: 8px; min-height: 48px; }
+.sheet-row-b .peek-text { flex: 1; min-width: 0; font-weight: 800; font-size: 17px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: center; }
+.sheet-row-b .peek-text .chip { font-size: 13px; padding: 2px 9px; vertical-align: 2px; margin-left: 4px; }
+.sheet-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 0 16px 16px; overscroll-behavior: contain; touch-action: pan-y; }
 .nav-btn { min-height: 48px; min-width: 48px; padding: 0 14px; border-radius: 14px; border: 1px solid var(--border-2); background: var(--surface-2); color: var(--text); font-weight: 700; font-size: 16px; display: inline-flex; align-items: center; gap: 6px; }
 .nav-btn.primary { background: var(--grad); color: #04121f; border-color: transparent; }
 .nav-btn svg { width: 20px; height: 20px; }
@@ -392,12 +405,12 @@ button { cursor: pointer; }
 .f-exp { font-size: 18px; line-height: 1.55; padding: 14px 16px; border-radius: 16px; background: rgba(3, 8, 20, .5); border: 1px solid var(--border); }
 .f-exp.ta { font-size: 18px; line-height: 1.7; }
 .lang-seg { display: inline-flex; background: rgba(3, 8, 20, .5); border: 1px solid var(--border); border-radius: 12px; padding: 3px; margin-bottom: 10px; }
-.lang-seg button { border: 0; background: transparent; min-height: 40px; padding: 0 14px; border-radius: 9px; color: var(--text-2); font-weight: 700; font-size: 15px; }
+.lang-seg button { border: 0; background: transparent; min-height: 48px; padding: 0 14px; border-radius: 9px; color: var(--text-2); font-weight: 700; font-size: 15px; }
 .lang-seg button.active { background: var(--surface-2); color: var(--text); }
 .f-actions { display: flex; gap: 10px; margin-top: 12px; }
 .f-actions .btn { flex: 1; min-height: 52px; }
 details.f-quote { margin-top: 12px; color: var(--text-2); font-size: 16px; }
-details.f-quote summary { cursor: pointer; min-height: 40px; display: flex; align-items: center; font-weight: 600; }
+details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; align-items: center; font-weight: 600; }
 
 .demo-menu { position: absolute; top: 64px; right: 12px; z-index: 10; border-radius: 18px; padding: 8px; width: min(300px, calc(100% - 24px)); }
 .demo-menu .dm-title { font-size: 13px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); padding: 8px 10px; }
@@ -501,10 +514,9 @@ details.f-quote summary { cursor: pointer; min-height: 40px; display: flex; alig
    AR ("View in your room")
    ===================================================================== */
 .ar-launch {
-  position: absolute; left: 10px; top: calc(var(--top-inset, 140px) + 64px); z-index: 4;
-  display: inline-flex; align-items: center; gap: 8px; min-height: 48px; padding: 0 16px;
-  border-radius: 14px; border: 1px solid rgba(45, 212, 191, .55); color: #04121f; font-weight: 800; font-size: 15px;
-  background: var(--grad); box-shadow: var(--glow);
+  width: 100%; margin-top: 8px; display: flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 52px; padding: 0 16px; border-radius: 16px; border: 1px solid rgba(45, 212, 191, .55);
+  color: #04121f; font-weight: 800; font-size: 16px; background: var(--grad); box-shadow: var(--glow);
 }
 .ar-launch svg { width: 22px; height: 22px; }
 

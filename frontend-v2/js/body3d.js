@@ -287,7 +287,8 @@ const Body3D = (() => {
   let host, labelHost, running = false, ready = false, raf = 0, t0 = performance.now();
   let markers = [];          // { group, core, halo, ripple, color, label, data, sel }
   let debugPts = [];
-  let insets = { top: 0, bottom: 0 };
+  let insets = { top: 0, bottom: 0 };      // animated (drives the view offset)
+  let insetsT = { top: 0, bottom: 0 };     // target (used for framing + label clamping)
   let userBusy = false, flight = null, idleSpin = null;
   let onSelectCb = () => {}, onViewCb = () => {};
   const cam = { fx: 0, fy: 0.9, fz: 0, yaw: 0, pitch: 0.06, dist: 3.4, y0: 0 };
@@ -515,9 +516,10 @@ const Body3D = (() => {
       const label = document.createElement("div");
       label.className = "mlabel";
       label.style.color = "#" + new THREE.Color(color).getHexString();
-      const shortName = item.short || item.zone_en;
-      label.innerHTML = `<b><span class="sw"></span><span style="color:var(--text)"><span class="full">${escHtml(item.zone_en)}</span><span class="brief">${escHtml(shortName)}</span></span></b><small>${escHtml(sideLabel(item.side))}${item.short ? " · " + escHtml(item.short) : ""}</small>`;
-      label.addEventListener("click", (e) => { e.stopPropagation(); onSelectCb(idx); });
+      // Only the selected finding's label is shown (CSS); several findings in one
+      // zone share a count so the label says e.g. "Left Knee · 4 findings".
+      const count = item.zoneCount > 1 ? ` · ${item.zoneCount} findings` : "";
+      label.innerHTML = `<b><span class="sw"></span><span style="color:var(--text)">${escHtml(item.zone_en)}${count}</span></b><small>${escHtml(sideLabel(item.side))}${item.short ? " · " + escHtml(item.short) : ""}</small>`;
       labelHost.appendChild(label);
       m.label = label;
       markers.push(m);
@@ -529,7 +531,7 @@ const Body3D = (() => {
       m.sel = m.index === idx;
       m.label.classList.toggle("sel", m.sel);
       m.label.classList.toggle("dim", idx != null && !m.sel);
-      m.lw = 0; // width changes with the compact/full style
+      m.lw = 0; m.lh = 0; // size is measured once the label is shown
     });
   }
 
@@ -596,7 +598,7 @@ const Body3D = (() => {
 
   function overviewDist() {
     const h = host.clientHeight || 600, w = host.clientWidth || 400;
-    const visH = Math.max(160, h - insets.top - insets.bottom);
+    const visH = Math.max(160, h - insetsT.top - insetsT.bottom);
     const tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     const byH = (1.9 / 2) / (tanH * (visH / h));
     const byW = (0.85 / 2) / (tanH * (w / h));
@@ -622,7 +624,7 @@ const Body3D = (() => {
 
   function spanDist(span) {
     const h = host.clientHeight || 600;
-    const visH = Math.max(160, h - insets.top - insets.bottom);
+    const visH = Math.max(160, h - insetsT.top - insetsT.bottom);
     const tanH = Math.tan(THREE.MathUtils.degToRad(camera.fov / 2));
     return span / (2 * tanH * (visH / h));
   }
@@ -720,14 +722,21 @@ const Body3D = (() => {
     m.screen = { x, y };
     const vis = v3.z < 1 && x > -40 && x < w + 40 && y > -20 && y < h + 20;
     m.label.style.display = vis ? "" : "none";
+    const isDebug = m.label.classList.contains("debug");
+    if (!isDebug && !m.sel) { m.lp = null; return; } // unselected: marker only, no label work
     if (vis) {
       // flip label to the left if it would overflow the right edge
-      if (!m.lw) m.lw = m.label.offsetWidth;
+      if (!m.lw) { m.lw = m.label.offsetWidth; m.lh = m.label.offsetHeight; }
       const lw = m.lw || 120;
       let left = x + offX + lw > w - 70 ? x - offX - lw : x + offX;
       left = Math.max(4, Math.min(w - lw - 4, left));
-      m.lp = { x: left, y: y + offY };
-      m.label.style.transform = `translate(${left.toFixed(1)}px, ${(y - 16 + offY).toFixed(1)}px)`;
+      let top = y - 16 + offY;
+      if (!isDebug) {
+        const lh = m.lh || 44;
+        top = Math.max(insetsT.top, Math.min(h - insetsT.bottom - lh, top));
+      }
+      m.lp = { x: left, y: top + 16 };
+      m.label.style.transform = `translate(${left.toFixed(1)}px, ${top.toFixed(1)}px)`;
       m.label.classList.toggle("flip", left < x);
     }
   }
@@ -811,6 +820,8 @@ const Body3D = (() => {
   function stop() { running = false; cancelAnimationFrame(raf); }
 
   function setInsets(top, bottom) {
+    if (Math.abs(top - insetsT.top) < 0.5 && Math.abs(bottom - insetsT.bottom) < 0.5) return;
+    insetsT = { top, bottom };
     const o = { top: insets.top, bottom: insets.bottom };
     tween(o, { top, bottom, duration: 0.45, ease: "power2.out", onUpdate: () => { insets.top = o.top; insets.bottom = o.bottom; updateViewOffset(); } });
   }

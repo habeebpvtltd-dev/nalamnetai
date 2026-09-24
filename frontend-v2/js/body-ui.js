@@ -12,7 +12,9 @@ window.BodyUI = (() => {
   let prefetchState = "idle"; // idle | loading | done | empty | error
   let prefetchErr = null;
   let visible = false;
-  let collapsed = false;
+  let sheetState = "collapsed";   // collapsed | half | full
+  let focusMode = "overview";     // overview | finding (what the camera is framing)
+  let hintTimer = null, lastFront = null;
   let applied = null;       // report object last pushed to the 3D view
   const SEV_RANK = { severe: 0, moderate: 1, mild: 2, unknown: 3 };
   const SEV_WORD = { severe: "Severe", moderate: "Moderate", mild: "Mild", unknown: "Not stated" };
@@ -37,6 +39,9 @@ window.BodyUI = (() => {
       });
     });
     out.sort((a, b) => SEV_RANK[a.severity] - SEV_RANK[b.severity]);
+    const perZone = {};
+    out.forEach((x) => { if (x.zone_id) perZone[x.zone_id] = (perZone[x.zone_id] || 0) + 1; });
+    out.forEach((x) => (x.zoneCount = x.zone_id ? perZone[x.zone_id] : 1));
     return out;
   }
 
@@ -58,7 +63,7 @@ window.BodyUI = (() => {
   function ensureEngine() {
     if (Body3D.ready || !glOk) return;
     try {
-      Body3D.init($("body-canvas-host"), $("body-labels"), { onSelect: select, onView: onView });
+      Body3D.init($("body-canvas-host"), $("body-labels"), { onSelect: (i) => select(i, { user: true }), onView: onView });
     } catch (e) {
       console.error("3D init failed", e);
       glOk = false;
@@ -70,11 +75,24 @@ window.BodyUI = (() => {
     const front = Math.cos(c.yaw) >= 0;
     $("btn-front").classList.toggle("active", front);
     $("btn-back").classList.toggle("active", !front);
-    $("orient-hint").innerHTML = front
-      ? "<b>Front view</b><br>Patient's left is on your right"
-      : "<b>Back view</b><br>Patient's left is on your left";
+    if (front !== lastFront) { lastFront = front; showHint(front); }
     if (FLAGS.debug) $("debug-panel").textContent =
       `yaw ${(c.yaw * 57.3 % 360).toFixed(0)}° pitch ${c.pitch.toFixed(2)} dist ${c.dist.toFixed(2)}\nfocus ${c.fx.toFixed(3)}, ${c.fy.toFixed(3)}, ${c.fz.toFixed(3)}`;
+  }
+
+  // Orientation hint: full sentence for 3 s, then shrinks to a small chip.
+  function showHint(front) {
+    const el = $("orient-hint");
+    el.className = "orient-hint full";
+    el.innerHTML = front
+      ? "<b>Front view</b> · Patient's left is on your right"
+      : "<b>Back view</b> · Patient's left is on your left";
+    clearTimeout(hintTimer);
+    hintTimer = setTimeout(() => {
+      el.className = "orient-hint chip";
+      el.innerHTML = front ? "<b>Front view</b>" : "<b>Back view</b>";
+      if (window.gsap) gsap.fromTo(el, { opacity: 0.4 }, { opacity: 1, duration: 0.35 });
+    }, 3000);
   }
 
   function updateInsets() {
@@ -82,8 +100,9 @@ window.BodyUI = (() => {
     const wrap = $("body-wrap").getBoundingClientRect();
     const top = $("body-top").getBoundingClientRect();
     const sheet = $("body-sheet").getBoundingClientRect();
-    const t = Math.max(0, top.bottom - wrap.top) + 8;
-    $("body-wrap").style.setProperty("--top-inset", t + "px");
+    const row = Math.max(0, top.bottom - wrap.top) + 6;   // view row (hint chip + Front/Back)
+    $("body-wrap").style.setProperty("--top-row", row + "px");
+    const t = row + 60;                                    // body is framed below the view row
     const b = sheet.height ? Math.max(0, wrap.bottom - sheet.top) + 8 : 0;
     Body3D.setInsets(t, b);
   }
@@ -102,6 +121,8 @@ window.BodyUI = (() => {
       Body3D.setNormal(!!report.overall_normal && !items.length);
       Body3D.highlight(null);
     }
+    focusMode = "overview";
+    setSheet("collapsed", { reframe: false });
     renderSheet();
     requestAnimationFrame(updateInsets);
     if (intro) runIntro();
@@ -114,8 +135,10 @@ window.BodyUI = (() => {
     setTimeout(() => {
       updateInsets();
       Body3D.introSpin(() => {
-        if (items.length) select(0);
-        else Body3D.resetView({ duration: 1.2 });
+        // First load: sheet collapsed, whole body in view, first finding highlighted.
+        if (items.length) select(0, { fly: false });
+        focusMode = "overview";
+        Body3D.resetView({ duration: 1.2 });
       });
     }, 350);
   }
@@ -161,34 +184,57 @@ window.BodyUI = (() => {
   const ICON_PIN = `<svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="9.5" r="2.5" fill="currentColor"/></svg>`;
   const DISCLAIMER = `<div class="disclaimer">ℹ️ This explains your report in simple words. Please discuss it with your doctor.</div>`;
 
+  const ICON_CHEV = `<svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+  function headHtml(countText, rowB) {
+    return `
+      <div class="sheet-row-a">
+        <div class="count">${countText}</div>
+        <button class="sheet-grab" id="sheet-grab" aria-label="Show or hide details"><span></span></button>
+        <button class="sheet-chev" id="sheet-chev" aria-label="${sheetState === "collapsed" ? "Show details" : "Hide details"}">${ICON_CHEV}</button>
+      </div>
+      <div class="sheet-row-b">${rowB}</div>`;
+  }
+
+  function bindHead() {
+    const toggle = () => { if (!consumeSwipe()) setSheet(sheetState === "collapsed" ? "half" : "collapsed"); };
+    $("sheet-grab").onclick = toggle;
+    $("sheet-chev").onclick = toggle;
+    const p = $("f-prev"), n = $("f-next");
+    if (p) p.onclick = () => { if (!consumeSwipe()) step(-1); };
+    if (n) n.onclick = () => { if (!consumeSwipe()) step(1); };
+  }
+
   function renderSheet() {
-    const b = $("sheet-body");
+    const head = $("sheet-head"), b = $("sheet-body");
     const r = report || {};
     if (!items.length) {
       const allF = (r.all_findings || []).filter((f) => f.explanation_en);
+      const peek = r.overall_normal ? "✅ No problem areas mentioned" : "No specific body area in this report";
+      head.innerHTML = headHtml(escHtml(r.study_name || "Scan report"), `<div class="peek-text">${peek}</div>`);
       const msg = r.overall_normal
         ? `<div class="notice notice-ok"><span class="n-ico">✅</span><span>Your report does not mention any problem areas.</span></div>`
         : `<div class="notice notice-info"><span class="n-ico">ℹ️</span><span>This report does not point to a specific body area.</span></div>`;
       b.innerHTML = `
-        <div class="sheet-peek"><div class="count">${escHtml(r.study_name || "Scan report")}</div></div>
         ${msg}
         ${r.impression ? `<div class="section-label">Report summary</div><div class="quote">${escHtml(r.impression)}</div>` : ""}
         ${allF.length ? `<div class="section-label">What the report says</div>` + allF.slice(0, 6).map((f) => `<div class="finding-row">${escHtml(f.explanation_en)}</div>`).join("") : ""}
         ${DISCLAIMER}`;
+      bindHead();
       return;
     }
-    const it = items[sel] || items[0];
     const i = sel < 0 ? 0 : sel;
+    const it = items[i];
     const f = it.f;
     const hasTa = !!(f.explanation_ta && f.explanation_ta.trim());
     const exp = lang === "ta" && hasTa ? f.explanation_ta : f.explanation_en || "The report mentions this area.";
-    const sevHex = "#" + new THREE.Color(SEVERITY_COLORS[it.severity]).getHexString();
+    const one = items.length < 2 ? "disabled" : "";
+    head.innerHTML = headHtml(
+      `Finding ${i + 1} of ${items.length}`,
+      `<button class="nav-btn" id="f-prev" aria-label="Previous finding" ${one}>${ICON_PREV}</button>
+       <div class="peek-text">${escHtml(it.zone_en)}<span class="chip sev sev-${it.severity}">${SEV_WORD[it.severity]}</span></div>
+       <button class="nav-btn primary" id="f-next" aria-label="Next finding" ${one}>Next ${ICON_NEXT}</button>`);
     b.innerHTML = `
-      <div class="sheet-peek">
-        <button class="nav-btn" id="f-prev" aria-label="Previous finding" ${items.length < 2 ? "disabled" : ""}>${ICON_PREV}</button>
-        <div class="count" style="text-align:center">Finding ${i + 1} of ${items.length}<br><span style="color:${sevHex};font-weight:800">${escHtml(it.zone_en)}</span></div>
-        <button class="nav-btn primary" id="f-next" aria-label="Next finding" ${items.length < 2 ? "disabled" : ""}>Next ${ICON_NEXT}</button>
-      </div>
       <div class="f-title">${escHtml(it.zone_en)}</div>
       ${it.zone_ta ? `<div class="f-title-ta" lang="ta">${escHtml(it.zone_ta)}</div>` : ""}
       <div class="f-chips">
@@ -207,12 +253,52 @@ window.BodyUI = (() => {
       </div>
       ${f.text_from_report ? `<details class="f-quote"><summary>What the report says</summary><div class="quote">${escHtml(f.text_from_report)}</div></details>` : ""}
       ${DISCLAIMER}`;
-
-    $("f-prev").onclick = () => step(-1);
-    $("f-next").onclick = () => step(1);
+    bindHead();
     $("f-stop").onclick = () => stopAnyAudio();
     $("f-listen").onclick = () => listen(it);
     b.querySelectorAll(".lang-seg button").forEach((btn) => (btn.onclick = () => setLang(btn.dataset.lang)));
+  }
+
+  /* ---------- sheet states + swipe ---------- */
+  const SHEET_ORDER = ["collapsed", "half", "full"];
+  let reframeTimer = null;
+  function setSheet(state, { reframe = true } = {}) {
+    if (!SHEET_ORDER.includes(state)) return;
+    const changed = state !== sheetState;
+    sheetState = state;
+    $("body-sheet").dataset.state = state;
+    const chev = $("sheet-chev");
+    if (chev) chev.setAttribute("aria-label", state === "collapsed" ? "Show details" : "Hide details");
+    if (!changed || !reframe) return;
+    // After the height transition, keep the selected spot centred above the sheet.
+    clearTimeout(reframeTimer);
+    reframeTimer = setTimeout(() => {
+      updateInsets();
+      if (!Body3D.ready) return;
+      const pl = sel >= 0 && items[sel] ? items[sel].placement : null;
+      if (focusMode === "finding" && pl) Body3D.focusPlacement(pl);
+      else Body3D.resetView({ yaw: Body3D.cam.yaw, duration: 0.8 });
+    }, 340);
+  }
+
+  // Swipe up/down on the sheet header changes state; a short tap still clicks.
+  let swipe = null, swallowClick = false;
+  function consumeSwipe() { if (swallowClick) { swallowClick = false; return true; } return false; }
+  function bindSwipe() {
+    const head = $("sheet-head");
+    head.addEventListener("pointerdown", (e) => { swipe = { y: e.clientY }; });
+    // Listen on window: a swipe usually ends outside the header.
+    window.addEventListener("pointerup", (e) => {
+      if (!swipe) return;
+      const dy = e.clientY - swipe.y;
+      swipe = null;
+      if (Math.abs(dy) < 28) return;
+      swallowClick = true;                    // don't also press the button under the finger
+      setTimeout(() => (swallowClick = false), 350);
+      const idx = SHEET_ORDER.indexOf(sheetState);
+      setSheet(SHEET_ORDER[Math.max(0, Math.min(2, idx + (dy < 0 ? 1 : -1)))]);
+    });
+    window.addEventListener("pointercancel", () => (swipe = null));
   }
 
   async function setLang(l) {
@@ -259,32 +345,28 @@ window.BodyUI = (() => {
 
   function step(d) {
     if (!items.length) return;
-    select((sel + d + items.length) % items.length);
+    select((sel + d + items.length) % items.length, { user: true });
   }
 
-  function select(i, { fly = true } = {}) {
+  function select(i, { fly = true, user = false } = {}) {
     if (!items[i]) return;
     sel = i;
     stopAnyAudio();
-    if (collapsed) setCollapsed(false);
+    const opening = user && sheetState === "collapsed";
+    if (opening) setSheet("half", { reframe: false });
     renderSheet();
-    if (window.gsap) gsap.fromTo("#sheet-body > :not(.sheet-peek)", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.03, ease: "power2.out", clearProps: "transform" });
+    if (window.gsap && sheetState !== "collapsed") gsap.fromTo("#sheet-body > *", { opacity: 0, y: 10 }, { opacity: 1, y: 0, duration: 0.4, stagger: 0.03, ease: "power2.out", clearProps: "transform" });
     $("sheet-body").scrollTop = 0;
-    requestAnimationFrame(updateInsets);
     if (Body3D.ready) {
       Body3D.highlight(i);
       if (fly) {
+        focusMode = "finding";
         const pl = items[i].placement;
-        if (pl) setTimeout(() => Body3D.focusPlacement(pl), 30);
-        else Body3D.resetView();
+        // If the sheet is opening, fly after its height settles so framing uses the final size.
+        const go = () => { updateInsets(); if (pl) Body3D.focusPlacement(pl); else { focusMode = "overview"; Body3D.resetView(); } };
+        setTimeout(go, opening ? 340 : 30);
       }
     }
-  }
-
-  function setCollapsed(c) {
-    collapsed = c;
-    $("body-sheet").classList.toggle("collapsed", c);
-    requestAnimationFrame(updateInsets);
   }
 
   function renderEmpty() {
@@ -295,8 +377,11 @@ window.BodyUI = (() => {
     const isErr = prefetchState === "error";
     $("study-meta").textContent = isErr ? "Could not reach the server" : "No scan report yet";
     $("body-banner").innerHTML = "";
+    $("sheet-head").innerHTML = headHtml(isErr ? "Connection problem" : "Nothing to show yet",
+      `<div class="peek-text">${isErr ? "Couldn't load your report" : "No scan report yet"}</div>`);
+    bindHead();
+    setSheet("half", { reframe: false });
     $("sheet-body").innerHTML = `
-      <div class="sheet-peek"><div class="count">${isErr ? "Connection problem" : "Nothing to show yet"}</div></div>
       <p style="margin:8px 0 12px;font-size:18px">${isErr
         ? "We couldn't load your latest scan report. Please check your internet and try again."
         : "Scan an X-ray, MRI, CT or ultrasound <strong>report</strong>, and the areas it mentions will light up on this body."}</p>
@@ -339,10 +424,10 @@ window.BodyUI = (() => {
   }
 
   function init() {
-    $("btn-front").onclick = () => Body3D.ready && Body3D.faceFront();
-    $("btn-back").onclick = () => Body3D.ready && Body3D.faceBack();
-    $("btn-reset").onclick = () => { if (Body3D.ready) { Body3D.highlight(sel >= 0 ? sel : null); Body3D.resetView(); } };
-    $("sheet-handle").onclick = () => setCollapsed(!collapsed);
+    $("btn-front").onclick = () => { if (Body3D.ready) { focusMode = "overview"; Body3D.faceFront(); } };
+    $("btn-back").onclick = () => { if (Body3D.ready) { focusMode = "overview"; Body3D.faceBack(); } };
+    $("btn-reset").onclick = () => { if (Body3D.ready) { focusMode = "overview"; Body3D.highlight(sel >= 0 ? sel : null); Body3D.resetView(); } };
+    bindSwipe();
     if (FLAGS.demo) { $("btn-demo").hidden = false; $("btn-demo").onclick = () => toggleDemo(); buildDemoMenu(); }
     if (FLAGS.debug) $("debug-panel").hidden = false;
     // AR is an extra mode: the button only appears when the phone supports immersive-ar.
