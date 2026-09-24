@@ -20,14 +20,11 @@ Uploads a medical document (prescription or radiology report) for OCR and AI ext
   "radiology": {
     "document_id": "498c6d72-c8c3-444a-8289-73cc4c7c35af",
     "study_name": "Chest X-ray PA",
-    "modality": "xray",
     "study_date": "2023-10-27",
-    "referring_doctor": "Dr. Smith",
-    "radiologist": "Dr. Jones",
-    "clinical_history": "Cough and fever",
+    "modality": "xray",
     "impression": "1. Moderate right lower lobe consolidation, likely infective. 2. Mild left pleural effusion.",
-    "overall_normal": false,
     "is_critical": false,
+    "overall_normal": false,
     "zones": [
       {
         "zone_id": "chest_lung_left",
@@ -36,20 +33,33 @@ Uploads a medical document (prescription or radiology report) for OCR and AI ext
         "findings": [
           {
             "id": "f1",
-            "text_from_report": "There is a mild blunting of the left costophrenic angle.",
             "zone_id": "chest_lung_left",
             "side": "left",
-            "severity_as_written": "mild",
+            "location_detail": "costophrenic_angle",
             "severity_level": "mild",
-            "is_normal": false,
+            "severity_as_written": "mild",
             "explanation_en": "A mild flattening (blunting) is seen at the left costophrenic angle.",
             "explanation_ta": "இடது நுரையீரலின் கீழ் விளிம்பில் ஒரு சிறிய தட்டையான தன்மை (blunting) காணப்படுகிறது.",
-            "location_detail": "costophrenic_angle"
+            "text_from_report": "There is a mild blunting of the left costophrenic angle.",
+            "is_normal": false
           }
         ]
       }
     ],
-    "all_findings": [ ... ]
+    "all_findings": [
+      {
+        "id": "f1",
+        "zone_id": "chest_lung_left",
+        "side": "left",
+        "location_detail": "costophrenic_angle",
+        "severity_level": "mild",
+        "severity_as_written": "mild",
+        "explanation_en": "A mild flattening (blunting) is seen at the left costophrenic angle.",
+        "explanation_ta": "இடது நுரையீரலின் கீழ் விளிம்பில் ஒரு சிறிய தட்டையான தன்மை (blunting) காணப்படுகிறது.",
+        "text_from_report": "There is a mild blunting of the left costophrenic angle.",
+        "is_normal": false
+      }
+    ]
   }
 }
 ```

@@ -31,7 +31,7 @@ def test_location_detail():
 
     # Brain
     f = {"body_zone": "head_brain", "text_from_report": "fronto-parietal hemorrhage"}
-    assert _derive_location_detail(f) == "frontal_parietal"
+    assert _derive_location_detail(f) == "fronto_parietal"
 
 def test_severity_mapping():
     # complete/acute -> severe

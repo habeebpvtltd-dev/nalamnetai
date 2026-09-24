@@ -58,17 +58,31 @@ def _build_radiology_viewer(document_id: str, fields: dict) -> dict:
     Zones list only contains zones that have at least one abnormal finding.
     """
     findings = fields.get("findings", [])
+    
+    # Ensure every finding has all keys with null fallback if missing
+    standard_findings = []
     for f in findings:
-        if "body_zone" in f:
-            f["zone_id"] = f.pop("body_zone")
+        sf = {
+            "id": f.get("id"),
+            "zone_id": f.get("body_zone") if "body_zone" in f else f.get("zone_id"),
+            "side": f.get("side", "not_stated"),
+            "location_detail": f.get("location_detail"),
+            "severity_level": f.get("severity_level", "unknown"),
+            "severity_as_written": f.get("severity_as_written", "not_stated"),
+            "explanation_en": f.get("explanation_en"),
+            "explanation_ta": f.get("explanation_ta"),
+            "text_from_report": f.get("text_from_report"),
+            "is_normal": f.get("is_normal", False)
+        }
+        standard_findings.append(sf)
 
     # Group ABNORMAL findings by zone
     zone_map: dict[str, list] = {}
-    for f in findings:
-        if f.get("is_normal"):
+    for sf in standard_findings:
+        if sf.get("is_normal"):
             continue
-        zone_id = f.get("zone_id") or "unzoned"
-        zone_map.setdefault(zone_id, []).append(f)
+        zone_id = sf.get("zone_id") or "unzoned"
+        zone_map.setdefault(zone_id, []).append(sf)
 
     zones = []
     for zone_id, zone_findings in zone_map.items():
@@ -83,16 +97,13 @@ def _build_radiology_viewer(document_id: str, fields: dict) -> dict:
     return {
         "document_id": document_id,
         "study_name": fields.get("study_name"),
-        "modality": fields.get("modality"),
         "study_date": fields.get("study_date"),
-        "referring_doctor": fields.get("referring_doctor"),
-        "radiologist": fields.get("radiologist"),
-        "clinical_history": fields.get("clinical_history"),
+        "modality": fields.get("modality"),
         "impression": fields.get("impression"),
-        "overall_normal": fields.get("overall_normal", False),
         "is_critical": fields.get("is_critical", False),
+        "overall_normal": fields.get("overall_normal", False),
         "zones": zones,
-        "all_findings": findings,
+        "all_findings": standard_findings,
     }
 
 

@@ -92,11 +92,16 @@ def extract_fields(document_type: str, text: str) -> dict:
 
     sys_prompt = _build_prompt(document_type, schema)
 
+    import re
+    text = re.sub(r'\n\s*\n+', '\n', text)
+    text = re.sub(r' +', ' ', text).strip()
+    text = text[:3000]
+
     try:
         raw = chat(
             messages=[
                 {"role": "system", "content": sys_prompt},
-                {"role": "user", "content": text[:3000]}
+                {"role": "user", "content": text}
             ],
             max_tokens=4096,
             temperature=0,
@@ -143,7 +148,9 @@ def extract_fields(document_type: str, text: str) -> dict:
     final_fields = {}
     for field_name, value in validated_dict.items():
         score = confidence_scores.get(field_name, 0.0)
-        if isinstance(score, (int, float)) and score >= MANDATORY_FIELD_CONFIDENCE_THRESHOLD:
+        if document_type == "prescription" and field_name == "medications":
+            final_fields[field_name] = value
+        elif isinstance(score, (int, float)) and score >= MANDATORY_FIELD_CONFIDENCE_THRESHOLD:
             final_fields[field_name] = value
         else:
             final_fields[field_name] = None if not isinstance(value, list) else []

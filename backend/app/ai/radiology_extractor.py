@@ -233,11 +233,15 @@ def extract_radiology_fields(text: str) -> dict:
     Returns {"fields": RadiologyReportFields dict, "confidence": {...}}.
     After LLM call, any body_zone not in VALID_ZONE_IDS is set to null.
     """
-    # OCR Cleanup
     import re
     text = text.replace("Grade |", "Grade I").replace("grade |||", "grade III").replace("grade ||", "grade II")
     # Fix single capital letters stuck to words: Amoderate -> A moderate, A3 cm -> A 3 cm
     text = re.sub(r'\b(A|I|O)([a-z]{3,}|[0-9]+)', r'\1 \2', text)
+    
+    # Trim OCR text (collapse whitespace, drop empty lines)
+    text = re.sub(r'\n\s*\n+', '\n', text)
+    text = re.sub(r' +', ' ', text).strip()
+    text = text[:3000]
 
     prompt = _RADIOLOGY_PROMPT_TEMPLATE.format(
         zone_list=_ZONE_LIST_STR,
@@ -248,7 +252,7 @@ def extract_radiology_fields(text: str) -> dict:
         raw = chat(
             messages=[
                 {"role": "system", "content": prompt},
-                {"role": "user", "content": text[:4000]}
+                {"role": "user", "content": text}
             ],
             max_tokens=4096,
             temperature=0,
@@ -429,7 +433,7 @@ def _rule_based_safety_net(text: str) -> dict:
             zone = f"chest_lung_{side}" if side in ("left", "right") else "chest_lung_left"
         elif "kidney" in clause or "renal" in clause:
             zone = f"kidney_{side}" if side in ("left", "right") else "kidney_left"
-        elif "brain" in clause or "cerebral" in clause or "hemorrhage" in clause or "ventricle" in clause:
+        elif "brain" in clause or "cerebral" in clause or "hemorrhage" in clause or "ventricle" in clause or "haematoma" in clause or "fronto" in clause or "parietal" in clause or "subdural" in clause:
             zone = "head_brain"
         elif "liver" in clause or "hepatic" in clause:
             zone = "liver"
@@ -572,9 +576,7 @@ def _verify_english_finding(finding: dict, full_report: str):
             except Exception:
                 exp_en = "" # Force empty so it fails the next check and uses the fallback template
         else:
-            clean_text = text_from_report.strip()
-            if clean_text.endswith("."):
-                clean_text = clean_text[:-1]
+            clean_text = text_from_report.strip().rstrip(".")
             exp_en = f"The report says: {clean_text}. Please discuss this with your doctor."
             
     finding["explanation_en"] = exp_en
@@ -613,10 +615,16 @@ def _derive_location_detail(finding: dict) -> str | None:
         
     elif zone == "head_brain":
         parts = []
-        if "front" in text: parts.append("frontal")
-        if "parietal" in text: parts.append("parietal")
-        if "temporal" in text: parts.append("temporal")
-        if "occipital" in text: parts.append("occipital")
+        has_front = "front" in text
+        has_parietal = "parietal" in text
+        has_temporal = "temporal" in text
+        has_occipital = "occipital" in text
+        
+        if has_front: parts.append("fronto" if (has_parietal or has_temporal or has_occipital) else "frontal")
+        if has_parietal: parts.append("parieto" if (has_temporal or has_occipital) else "parietal")
+        if has_temporal: parts.append("temporo" if has_occipital else "temporal")
+        if has_occipital: parts.append("occipital")
+        
         if parts: return "_".join(parts)
         
     elif zone == "liver":
