@@ -204,26 +204,37 @@ def _extract_text_vision_fallback(image_bytes: bytes) -> str:
 
     print(f"[OCR] Vision payload: {len(b64_image)//1024} KB, {w}x{h}")
 
-    response = groq_client.chat.completions.create(
-        model=VISION_MODEL,
-        max_tokens=800,   # keep under free-tier 1000 OTPM limit
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": (
-                    "Read every piece of text visible in this image, exactly as written. "
-                    "Include labels, numbers, dates, and table values. "
-                    "Output plain text only, preserving reading order top to bottom. "
-                    "Do not summarize or explain — just transcribe the text."
-                )},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
-            ],
-        }],
-    )
-    raw_text = response.choices[0].message.content.strip()
-    raw_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
-    print(f"[OCR] Vision output: {raw_text[:300]}")
-    return raw_text
+    for attempt in range(2):
+        try:
+            response = groq_client.chat.completions.create(
+                model=VISION_MODEL,
+                max_tokens=800,   # keep under free-tier 1000 OTPM limit
+                timeout=45.0,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": (
+                            "Read every piece of text visible in this image, exactly as written. "
+                            "Include labels, numbers, dates, and table values. "
+                            "Output plain text only, preserving reading order top to bottom. "
+                            "Do not summarize or explain — just transcribe the text."
+                        )},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                    ],
+                }],
+            )
+            raw_text = response.choices[0].message.content.strip()
+            raw_text = re.sub(r'<think>.*?</think>', '', raw_text, flags=re.DOTALL).strip()
+            print(f"[OCR] Vision output: {raw_text[:300]}")
+            return raw_text
+        except Exception as e:
+            if attempt == 0 and ("429" in str(e) or "50" in str(e) or "rate limit" in str(e).lower()):
+                import time
+                time.sleep(2)
+                continue
+            print(f"[ERROR] Vision fallback failed: {e}")
+            return ""
+    return ""
 
 
 def vision_classify_and_extract(image_bytes: bytes) -> dict | None:
@@ -294,36 +305,43 @@ If the document is radiology_image, return "fields": {{}} and "_confidence": {{}
 If the document is unclassified, return "fields": {{}} and "_confidence": {{}}.
 """
 
-    try:
-        response = groq_client.chat.completions.create(
-            model=VISION_MODEL,
-            max_tokens=2000,
-            messages=[{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
-                ],
-            }],
-        )
-        raw = response.choices[0].message.content.strip()
-        # Strip any <think> blocks (reasoning models)
-        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-        # Extract JSON
-        start = raw.find("{")
-        end = raw.rfind("}")
-        if start != -1 and end != -1:
-            raw = raw[start:end+1]
-        parsed = json.loads(raw)
-        doc_type = parsed.get("doc_type")
-        print(f"[OCR] Vision direct-extract result: type={doc_type} handwritten={parsed.get('handwritten')}")
-        if doc_type == "radiology_report":
-            print("[OCR] Vision identified radiology_report. Falling back to vision OCR text extraction for dedicated processing.")
+    for attempt in range(2):
+        try:
+            response = groq_client.chat.completions.create(
+                model=VISION_MODEL,
+                max_tokens=2000,
+                timeout=45.0,
+                messages=[{
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_image}"}},
+                    ],
+                }],
+            )
+            raw = response.choices[0].message.content.strip()
+            # Strip any <think> blocks (reasoning models)
+            raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+            # Extract JSON
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start != -1 and end != -1:
+                raw = raw[start:end+1]
+            parsed = json.loads(raw)
+            doc_type = parsed.get("doc_type")
+            print(f"[OCR] Vision direct-extract result: type={doc_type} handwritten={parsed.get('handwritten')}")
+            if doc_type == "radiology_report":
+                print("[OCR] Vision identified radiology_report. Falling back to vision OCR text extraction for dedicated processing.")
+                return None
+            return parsed
+        except Exception as e:
+            if attempt == 0 and ("429" in str(e) or "50" in str(e) or "rate limit" in str(e).lower()):
+                import time
+                time.sleep(2)
+                continue
+            print(f"[ERROR] Vision direct-extract failed: {e}")
             return None
-        return parsed
-    except Exception as e:
-        print(f"[ERROR] Vision direct-extract failed: {e}")
-        return None
+    return None
 
 
 def _key_fields_missing(doc_type: str, fields: dict) -> bool:

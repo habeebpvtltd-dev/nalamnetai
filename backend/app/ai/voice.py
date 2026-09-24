@@ -64,21 +64,36 @@ def transcribe(audio_bytes: bytes, mime_type: str = "") -> dict:
             data = {"model": "saaras:v3", "language_code": "unknown", "mode": "transcribe"}
             headers = {"api-subscription-key": SARVAM_API_KEY}
             
-            with httpx.Client(timeout=15.0) as client:
-                resp = client.post("https://api.sarvam.ai/speech-to-text", headers=headers, data=data, files=files)
-                
-                if resp.status_code in [400, 415]:
-                    # Rejected format, convert and retry
-                    current_audio = _convert_to_wav(current_audio)
-                    files = {"file": ("audio.wav", current_audio, "audio/wav")}
-                    resp = client.post("https://api.sarvam.ai/speech-to-text", headers=headers, data=data, files=files)
-                    
-                if resp.status_code in [401, 403, 429]:
-                    disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
-                    raise Exception("Sarvam rate limit or auth error")
-                    
-                resp.raise_for_status()
-                res_json = resp.json()
+            with httpx.Client(timeout=60.0) as client:
+                for attempt in range(2):
+                    try:
+                        resp = client.post("https://api.sarvam.ai/speech-to-text", headers=headers, data=data, files=files)
+                        
+                        if resp.status_code in [400, 415]:
+                            # Rejected format, convert and retry
+                            current_audio = _convert_to_wav(current_audio)
+                            files = {"file": ("audio.wav", current_audio, "audio/wav")}
+                            resp = client.post("https://api.sarvam.ai/speech-to-text", headers=headers, data=data, files=files)
+                            
+                        if resp.status_code == 429 or resp.status_code >= 500:
+                            if attempt == 0:
+                                time.sleep(2)
+                                continue
+                            if resp.status_code == 429:
+                                disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
+                            raise Exception("Sarvam rate limit or error")
+                        if resp.status_code in [401, 403]:
+                            disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
+                            raise Exception("Sarvam auth error")
+                            
+                        resp.raise_for_status()
+                        res_json = resp.json()
+                        break
+                    except Exception as e:
+                        if attempt == 0 and ("429" in str(e) or "50" in str(e)):
+                            time.sleep(2)
+                            continue
+                        raise e
             
             text = res_json.get("transcript", "")
             detected_lang = res_json.get("language_code", "en")
@@ -156,7 +171,7 @@ def synthesize(text: str, language: str = "en") -> dict:
         }
         
         try:
-            with httpx.Client(timeout=10.0) as client:
+            with httpx.Client(timeout=60.0) as client:
                 for chunk in chunks:
                     payload = {
                         "text": chunk,
@@ -165,14 +180,29 @@ def synthesize(text: str, language: str = "en") -> dict:
                         "model": "bulbul:v3",
                         "pace": pace
                     }
-                    resp = client.post("https://api.sarvam.ai/text-to-speech", headers=headers, json=payload)
-                    
-                    if resp.status_code in [401, 403, 429]:
-                        disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
-                        raise Exception("Sarvam TTS limit/auth error")
-                        
-                    resp.raise_for_status()
-                    res_json = resp.json()
+                    for attempt in range(2):
+                        try:
+                            resp = client.post("https://api.sarvam.ai/text-to-speech", headers=headers, json=payload)
+                            
+                            if resp.status_code == 429 or resp.status_code >= 500:
+                                if attempt == 0:
+                                    time.sleep(2)
+                                    continue
+                                if resp.status_code == 429:
+                                    disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
+                                raise Exception("Sarvam TTS rate limit or error")
+                            if resp.status_code in [401, 403]:
+                                disable_sarvam(f"HTTP {resp.status_code}: {resp.text}")
+                                raise Exception("Sarvam TTS auth error")
+                                
+                            resp.raise_for_status()
+                            res_json = resp.json()
+                            break
+                        except Exception as e:
+                            if attempt == 0 and ("429" in str(e) or "50" in str(e)):
+                                time.sleep(2)
+                                continue
+                            raise e
                     audios = res_json.get("audios", [])
                     if audios:
                         audio_chunks.append(base64.b64decode(audios[0]))

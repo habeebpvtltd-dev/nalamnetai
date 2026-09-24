@@ -60,58 +60,67 @@ def chat(messages: list[dict], **opts) -> str:
         print(f"[LLM] model={model_key} fallback_from={fallback_from}")
         
         try:
-            if provider == "groq":
-                groq_opts = {
-                    "model": model_name,
-                    "messages": messages,
-                    "max_tokens": opts.get("max_tokens", 4096)
-                }
-                if "temperature" in opts:
-                    groq_opts["temperature"] = opts["temperature"]
-                if opts.get("response_format"):
-                    groq_opts["response_format"] = opts["response_format"]
-                
-                response = groq_client.chat.completions.create(**groq_opts)
-                return response.choices[0].message.content.strip()
-                
-            elif provider == "sarvam":
-                headers = {"api-subscription-key": sarvam_api_key, "Content-Type": "application/json"}
-                
-                payload = {
-                    "model": model_name,
-                    "messages": messages,
-                    "temperature": opts.get("temperature", 0.2),
-                    "max_tokens": opts.get("max_tokens", 4096),
-                    "reasoning_effort": "low"
-                }
-                if opts.get("response_format"):
-                    payload["response_format"] = opts["response_format"]
-                
-                resp = httpx.post("https://api.sarvam.ai/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
-                
-                if resp.status_code == 429:
-                    _cool_downs[model_key] = time.time() + 600
-                    last_error = f"Sarvam 429: {resp.text}"
-                    fallback_from = model_key
-                    continue
-                elif resp.status_code in (401, 404):
-                    _cool_downs[model_key] = time.time() + 3600  # 1 hour cooldown for auth/not found
-                    last_error = f"Sarvam {resp.status_code}: {resp.text}"
-                    fallback_from = model_key
-                    continue
-                elif resp.status_code >= 500:
-                    last_error = f"Sarvam {resp.status_code}: {resp.text}"
-                    fallback_from = model_key
-                    continue
+            for attempt in range(2):
+                try:
+                    if provider == "groq":
+                        groq_opts = {
+                            "model": model_name,
+                            "messages": messages,
+                            "max_tokens": opts.get("max_tokens", 4096),
+                            "timeout": 30.0
+                        }
+                        if "temperature" in opts:
+                            groq_opts["temperature"] = opts["temperature"]
+                        if opts.get("response_format"):
+                            groq_opts["response_format"] = opts["response_format"]
+                        
+                        response = groq_client.chat.completions.create(**groq_opts)
+                        return response.choices[0].message.content.strip()
+                        
+                    elif provider == "sarvam":
+                        headers = {"api-subscription-key": sarvam_api_key, "Content-Type": "application/json"}
+                        
+                        payload = {
+                            "model": model_name,
+                            "messages": messages,
+                            "temperature": opts.get("temperature", 0.2),
+                            "max_tokens": opts.get("max_tokens", 4096),
+                            "reasoning_effort": "low"
+                        }
+                        if opts.get("response_format"):
+                            payload["response_format"] = opts["response_format"]
+                        
+                        resp = httpx.post("https://api.sarvam.ai/v1/chat/completions", headers=headers, json=payload, timeout=60.0)
+                        
+                        if resp.status_code == 429 or resp.status_code >= 500:
+                            if attempt == 0:
+                                time.sleep(2)
+                                continue
+                            if resp.status_code == 429:
+                                _cool_downs[model_key] = time.time() + 600
+                            last_error = f"Sarvam {resp.status_code}: {resp.text}"
+                            fallback_from = model_key
+                            raise Exception(last_error)
+                        elif resp.status_code in (401, 404):
+                            _cool_downs[model_key] = time.time() + 3600  # 1 hour cooldown for auth/not found
+                            last_error = f"Sarvam {resp.status_code}: {resp.text}"
+                            fallback_from = model_key
+                            raise Exception(last_error)
+                            
+                        resp.raise_for_status()
+                        data = resp.json()
+                        content = data["choices"][0]["message"].get("content")
+                        if content is None:
+                            print(f"[LLM] Sarvam unexpected None response: {data}")
+                            raise Exception("Sarvam response content is None")
+                        return content.strip()
+                except Exception as attempt_e:
+                    error_str = str(attempt_e).lower()
+                    if attempt == 0 and ("429" in error_str or "rate limit" in error_str or "500" in error_str or "502" in error_str or "503" in error_str or "504" in error_str):
+                        time.sleep(2)
+                        continue
+                    raise attempt_e
                     
-                resp.raise_for_status()
-                data = resp.json()
-                content = data["choices"][0]["message"].get("content")
-                if content is None:
-                    print(f"[LLM] Sarvam unexpected None response: {data}")
-                    raise Exception("Sarvam response content is None")
-                return content.strip()
-                
         except Exception as e:
             error_str = str(e).lower()
             last_error = str(e)
@@ -125,3 +134,4 @@ def chat(messages: list[dict], **opts) -> str:
             continue
             
     raise Exception(f"All LLMs in chain failed. Last error: {last_error}")
+
