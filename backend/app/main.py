@@ -11,6 +11,15 @@ from app.models import document  # noqa: registers models before create_all
 
 Base.metadata.create_all(bind=engine)  # creates nalamnet.db + tables on first run
 
+# Make the code tolerate missing file_hash column (e.g. Supabase instance)
+try:
+    from sqlalchemy import text
+    with engine.begin() as conn:
+        conn.execute(text("ALTER TABLE documents ADD COLUMN IF NOT EXISTS file_hash VARCHAR;"))
+        conn.execute(text("CREATE INDEX IF NOT EXISTS ix_documents_file_hash ON documents (file_hash);"))
+except Exception as e:
+    print(f"Migration error (ignoring): {e}")
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
@@ -20,7 +29,7 @@ app = FastAPI(title="NalamNet AI", version="0.1.0")
 async def global_exception_handler(request: Request, exc: Exception):
     print(f"[ERROR] Unhandled exception: {exc}")
     return JSONResponse(
-        status_code=500,
+        status_code=200,
         content={"error": "An internal server error occurred", "details": str(exc)}
     )
 

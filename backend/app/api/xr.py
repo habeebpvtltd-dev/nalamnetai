@@ -335,130 +335,150 @@ def setup_emergency_profile(
     db: Session = Depends(get_db),
 ):
     """Creates/overwrites the (single, demo) emergency profile, PIN-protected."""
-    db.query(EmergencyProfile).delete()
-    new_profile = EmergencyProfile(
-        blood_group=blood_group, allergies=allergies, conditions=conditions,
-        emergency_contact=emergency_contact, preferred_hospital=preferred_hospital,
-        pin_hash=pwd_context.hash(pin),
-        public_token=uuid.uuid4().hex
-    )
-    db.add(new_profile)
-    db.commit()
-    return {"status": "saved", "public_token": new_profile.public_token}
+    try:
+        db.query(EmergencyProfile).delete()
+        new_profile = EmergencyProfile(
+            blood_group=blood_group, allergies=allergies, conditions=conditions,
+            emergency_contact=emergency_contact, preferred_hospital=preferred_hospital,
+            pin_hash=pwd_context.hash(pin),
+            public_token=uuid.uuid4().hex
+        )
+        db.add(new_profile)
+        db.commit()
+        return {"status": "saved", "public_token": new_profile.public_token}
+    except Exception as e:
+        print(f"[ERROR] /emergency/setup: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
 
 
 @router.post("/emergency/regenerate")
 def regenerate_emergency_link(pin: str, db: Session = Depends(get_db)):
     """Issues a new public token."""
-    profile = db.query(EmergencyProfile).first()
-    if not profile or not pwd_context.verify(pin, profile.pin_hash):
-        raise HTTPException(status_code=401, detail="Incorrect PIN")
-    profile.public_token = uuid.uuid4().hex
-    db.commit()
-    return {"status": "regenerated", "public_token": profile.public_token}
+    try:
+        profile = db.query(EmergencyProfile).first()
+        if not profile or not pwd_context.verify(pin, profile.pin_hash):
+            return JSONResponse(status_code=401, content={"error": "Incorrect PIN"})
+        profile.public_token = uuid.uuid4().hex
+        db.commit()
+        return {"status": "regenerated", "public_token": profile.public_token}
+    except Exception as e:
+        print(f"[ERROR] /emergency/regenerate: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
 
 
 @router.get("/emergency/{public_token}", response_class=HTMLResponse)
 def public_emergency_profile(public_token: str, db: Session = Depends(get_db)):
-    profile = db.query(EmergencyProfile).filter(EmergencyProfile.public_token == public_token).first()
-    if not profile:
-        return HTMLResponse("<h1>Profile not found</h1>", status_code=404)
-        
-    latest_doc = db.query(Document).filter(Document.document_type == "prescription").order_by(Document.created_at.desc()).first()
-    meds_list = "No recent medications found."
-    date_str = "Unknown"
-    
-    if latest_doc:
-        date_str = latest_doc.created_at.strftime("%d-%b-%Y")
-        date_entity = db.query(ExtractedEntity).filter(ExtractedEntity.document_id == latest_doc.id, ExtractedEntity.field_name == "date").first()
-        if date_entity and date_entity.field_value:
-            date_str = date_entity.field_value
+    try:
+        profile = db.query(EmergencyProfile).filter(EmergencyProfile.public_token == public_token).first()
+        if not profile:
+            return HTMLResponse("<h1>Profile not found</h1>", status_code=404)
             
-        meds = db.query(ExtractedEntity).filter(
-            ExtractedEntity.document_id == latest_doc.id,
-            ExtractedEntity.field_name == "medications"
-        ).first()
-        if meds and meds.field_value:
-            try:
-                meds_data = json.loads(meds.field_value)
-                if isinstance(meds_data, str): meds_data = json.loads(meds_data.replace("'", '"'))
-                if isinstance(meds_data, list):
-                    meds_list = "<ul>"
-                    for m in meds_data:
-                        name = m.get("name", "")
-                        dose = m.get("dosage", "")
-                        freq = m.get("frequency", "")
-                        meds_list += f"<li><strong>{name}</strong> - {dose} ({freq})</li>"
-                    meds_list += "</ul>"
-            except:
-                meds_list = str(meds.field_value)
+        latest_doc = db.query(Document).filter(Document.document_type == "prescription").order_by(Document.created_at.desc()).first()
+        meds_list = "No recent medications found."
+        date_str = "Unknown"
+        
+        if latest_doc:
+            date_str = latest_doc.created_at.strftime("%d-%b-%Y")
+            date_entity = db.query(ExtractedEntity).filter(ExtractedEntity.document_id == latest_doc.id, ExtractedEntity.field_name == "date").first()
+            if date_entity and date_entity.field_value:
+                date_str = date_entity.field_value
                 
-    html = f"""
-    <html>
-    <head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Emergency Info</title></head>
-    <body style="font-family:-apple-system,sans-serif; padding:20px; max-width:600px; margin:0 auto; background:#fff; color:#000;">
-        <h1 style="color:#ef4444; text-align:center; margin-bottom: 5px;">🚨 EMERGENCY MEDICAL INFO</h1>
-        <hr style="border: 1px solid #eee; margin-bottom: 20px;">
-        <p style="font-size: 18px; margin: 5px 0;"><strong>Blood Group:</strong> <span style="color:#ef4444; font-weight:bold; font-size: 22px;">{profile.blood_group or '-'}</span></p>
-        <p style="font-size: 18px; margin: 5px 0;"><strong>Allergies:</strong> {profile.allergies or '-'}</p>
-        <p style="font-size: 18px; margin: 5px 0;"><strong>Conditions:</strong> {profile.conditions or '-'}</p>
-        <hr style="border: 1px solid #eee; margin: 20px 0;">
-        <h3 style="margin-bottom: 5px;">Current Medications</h3>
-        <p style="font-size: 13px; color: #666; margin-top: 0; font-style: italic;">Medicines from prescription dated {date_str}</p>
-        <div style="background: #f9f9f9; padding: 10px; border-radius: 8px;">
-            {meds_list}
-        </div>
-        <hr style="border: 1px solid #eee; margin: 20px 0;">
-        <div style="text-align:center; margin-top:30px;">
-            <a href="tel:{profile.emergency_contact}" style="background:#ef4444; color:white; padding:15px 30px; text-decoration:none; border-radius:10px; font-size:20px; display:inline-block; font-weight: bold; width: 100%; box-sizing: border-box;">📞 Call Emergency Contact</a>
-        </div>
-    </body>
-    </html>
-    """
-    return HTMLResponse(content=html)
+            meds = db.query(ExtractedEntity).filter(
+                ExtractedEntity.document_id == latest_doc.id,
+                ExtractedEntity.field_name == "medications"
+            ).first()
+            if meds and meds.field_value:
+                try:
+                    meds_data = json.loads(meds.field_value)
+                    if isinstance(meds_data, str): meds_data = json.loads(meds_data.replace("'", '"'))
+                    if isinstance(meds_data, list):
+                        meds_list = "<ul>"
+                        for m in meds_data:
+                            name = m.get("name", "")
+                            dose = m.get("dosage", "")
+                            freq = m.get("frequency", "")
+                            meds_list += f"<li><strong>{name}</strong> - {dose} ({freq})</li>"
+                        meds_list += "</ul>"
+                except:
+                    meds_list = str(meds.field_value)
+                    
+        html = f"""
+        <html>
+        <head><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Emergency Info</title></head>
+        <body style="font-family:-apple-system,sans-serif; padding:20px; max-width:600px; margin:0 auto; background:#fff; color:#000;">
+            <h1 style="color:#ef4444; text-align:center; margin-bottom: 5px;">🚨 EMERGENCY MEDICAL INFO</h1>
+            <hr style="border: 1px solid #eee; margin-bottom: 20px;">
+            <p style="font-size: 18px; margin: 5px 0;"><strong>Blood Group:</strong> <span style="color:#ef4444; font-weight:bold; font-size: 22px;">{profile.blood_group or '-'}</span></p>
+            <p style="font-size: 18px; margin: 5px 0;"><strong>Allergies:</strong> {profile.allergies or '-'}</p>
+            <p style="font-size: 18px; margin: 5px 0;"><strong>Conditions:</strong> {profile.conditions or '-'}</p>
+            <hr style="border: 1px solid #eee; margin: 20px 0;">
+            <h3 style="margin-bottom: 5px;">Current Medications</h3>
+            <p style="font-size: 13px; color: #666; margin-top: 0; font-style: italic;">Medicines from prescription dated {date_str}</p>
+            <div style="background: #f9f9f9; padding: 10px; border-radius: 8px;">
+                {meds_list}
+            </div>
+            <hr style="border: 1px solid #eee; margin: 20px 0;">
+            <div style="text-align:center; margin-top:30px;">
+                <a href="tel:{profile.emergency_contact}" style="background:#ef4444; color:white; padding:15px 30px; text-decoration:none; border-radius:10px; font-size:20px; display:inline-block; font-weight: bold; width: 100%; box-sizing: border-box;">📞 Call Emergency Contact</a>
+            </div>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html)
+    except Exception as e:
+        print(f"[ERROR] /emergency/{{public_token}}: {e}")
+        return HTMLResponse("<h1>An error occurred</h1>", status_code=200)
 
 
 @router.get("/emergency/{public_token}/qr")
 def get_emergency_qr(public_token: str, request: Request, db: Session = Depends(get_db)):
-    profile = db.query(EmergencyProfile).filter(EmergencyProfile.public_token == public_token).first()
-    if not profile:
-        raise HTTPException(status_code=404, detail="Not found")
+    try:
+        profile = db.query(EmergencyProfile).filter(EmergencyProfile.public_token == public_token).first()
+        if not profile:
+            return JSONResponse(status_code=404, content={"error": "Not found"})
+            
+        base_url = os.environ.get("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
+        url = f"{base_url}/api/v1/xr/emergency/{public_token}"
         
-    base_url = os.environ.get("PUBLIC_BASE_URL", str(request.base_url).rstrip("/"))
-    url = f"{base_url}/api/v1/xr/emergency/{public_token}"
-    
-    qr = qrcode.QRCode(version=1, box_size=10, border=4)
-    qr.add_data(url)
-    qr.make(fit=True)
-    img = qr.make_image(fill_color="black", back_color="white")
-    
-    buffered = io.BytesIO()
-    img.save(buffered, format="PNG")
-    img_str = base64.b64encode(buffered.getvalue()).decode()
-    return {"qr_code_base64": img_str, "url": url}
+        qr = qrcode.QRCode(version=1, box_size=10, border=4)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        return {"qr_code_base64": img_str, "url": url}
+    except Exception as e:
+        print(f"[ERROR] /emergency/{{public_token}}/qr: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
 
 
 @router.post("/emergency/unlock")
 def unlock_emergency_profile(pin: str, db: Session = Depends(get_db)):
     """Verifies PIN, returns emergency data only if correct."""
-    profile = db.query(EmergencyProfile).first()
-    if not profile:
-        raise HTTPException(status_code=404, detail="No emergency profile set up yet")
-    if not pwd_context.verify(pin, profile.pin_hash):
-        raise HTTPException(status_code=401, detail="Incorrect PIN")
-        
-    if not profile.public_token:
-        profile.public_token = uuid.uuid4().hex
-        db.commit()
+    try:
+        profile = db.query(EmergencyProfile).first()
+        if not profile:
+            return JSONResponse(status_code=404, content={"error": "No emergency profile set up yet"})
+        if not pwd_context.verify(pin, profile.pin_hash):
+            return JSONResponse(status_code=401, content={"error": "Incorrect PIN"})
+            
+        if not profile.public_token:
+            profile.public_token = uuid.uuid4().hex
+            db.commit()
 
-    return {
-        "blood_group": profile.blood_group,
-        "allergies": profile.allergies,
-        "conditions": profile.conditions,
-        "emergency_contact": profile.emergency_contact,
-        "preferred_hospital": profile.preferred_hospital,
-        "public_token": profile.public_token,
-    }
+        return {
+            "blood_group": profile.blood_group,
+            "allergies": profile.allergies,
+            "conditions": profile.conditions,
+            "emergency_contact": profile.emergency_contact,
+            "preferred_hospital": profile.preferred_hospital,
+            "public_token": profile.public_token,
+        }
+    except Exception as e:
+        print(f"[ERROR] /emergency/unlock: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
 
 
 @router.post("/voice/transcribe")
@@ -482,6 +502,11 @@ def voice_tts(req: TTSRequest):
 @router.post("/assistant")
 def ask_assistant(question: str, language: str = "en", db: Session = Depends(get_db)):
     """Answers a question grounded only in documents scanned so far (simple RAG)."""
+    import re
+    if re.search(r'[\u0B80-\u0BFF]', question):
+        language = "ta"
+    else:
+        language = "en"
     documents = db.query(Document).order_by(Document.created_at.desc()).limit(10).all()
     context_data = []
     
@@ -542,7 +567,9 @@ Never present an unclear medicine name as a confirmed fact.
 RADIOLOGY RULE: For radiology_report documents, only describe what the report says using the explanation_en/explanation_ta fields. Do NOT diagnose, prognose, or advise treatment. Always end radiology answers with: "Please discuss this report with your doctor."
 Critical explanation rules: keep the report's hedging exactly ('suspicious for' stays 'may be / needs more tests', never 'you have cancer'); no survival or prognosis talk; don't downplay either.
 
-Reply in the language given: {language}. For 'ta', write display_text in simple spoken Tamil (Tamil script). Write speech_text in warm, natural spoken Tamil — the way a caring family member talks to an elderly person. Short sentences, polite forms (e.g. -ங்க endings), no formal written Tamil, no English symbols. Medicine names stay in English letters.
+Reply entirely in the language given: {language}. BOTH display_text and speech_text MUST be written in {language}. 
+For 'ta', write display_text in simple spoken Tamil (Tamil script). Write speech_text in warm, natural spoken Tamil — the way a caring family member talks to an elderly person. Short sentences, polite forms (e.g. -ங்க endings), no formal written Tamil, no English symbols. Medicine names stay in English letters.
+For 'en', write both fields in conversational English.
 
 Output MUST be a JSON object with two keys:
 1. "display_text": short simple sentences; medicines as a list, one per line, each with name + how to take it. Name in Title Case, not ALL CAPS. Flag unclear medicines with "(⚠ Unclear — confirm with doctor)".
@@ -579,9 +606,18 @@ Question ({language}): {question}
 
     try:
         parsed = json.loads(raw)
-        if "display_text" not in parsed or "speech_text" not in parsed:
+        display_text = (parsed.get("display_text") or "").strip()
+        speech_text = (parsed.get("speech_text") or "").strip()
+        
+        if not display_text and speech_text:
+            display_text = speech_text
+        elif not speech_text and display_text:
+            speech_text = display_text
+            
+        if not display_text and not speech_text:
             return fallback_response
-        return parsed
+            
+        return {"display_text": display_text, "speech_text": speech_text}
     except json.JSONDecodeError:
         return fallback_response
 
@@ -625,19 +661,23 @@ def get_latest_radiology(lang: str = "en", db: Session = Depends(get_db)):
     Returns the most recently scanned radiology_report in viewer-ready JSON.
     This is what the Part 3 3D viewer will poll.
     """
-    doc = (
-        db.query(Document)
-        .filter(Document.document_type == "radiology_report")
-        .order_by(Document.created_at.desc())
-        .first()
-    )
-    if not doc:
-        raise HTTPException(status_code=404, detail="No radiology report scanned yet")
-        
-    if lang == "ta":
-        _ensure_tamil_translations(doc, db)
-        
-    return _load_radiology_viewer(doc, db)
+    try:
+        doc = (
+            db.query(Document)
+            .filter(Document.document_type == "radiology_report")
+            .order_by(Document.created_at.desc())
+            .first()
+        )
+        if not doc:
+            return JSONResponse(status_code=404, content={"error": "No radiology report scanned yet"})
+            
+        if lang == "ta":
+            _ensure_tamil_translations(doc, db)
+            
+        return _load_radiology_viewer(doc, db)
+    except Exception as e:
+        print(f"[ERROR] /radiology/latest: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
 
 
 @router.get("/radiology/{document_id}")
@@ -645,14 +685,18 @@ def get_radiology_by_id(document_id: str, lang: str = "en", db: Session = Depend
     """
     Returns a specific radiology_report by document_id in viewer-ready JSON.
     """
-    doc = db.query(Document).filter(
-        Document.id == document_id,
-        Document.document_type == "radiology_report",
-    ).first()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Radiology report not found")
-        
-    if lang == "ta":
-        _ensure_tamil_translations(doc, db)
-        
-    return _load_radiology_viewer(doc, db)
+    try:
+        doc = db.query(Document).filter(
+            Document.id == document_id,
+            Document.document_type == "radiology_report",
+        ).first()
+        if not doc:
+            return JSONResponse(status_code=404, content={"error": "Radiology report not found"})
+            
+        if lang == "ta":
+            _ensure_tamil_translations(doc, db)
+            
+        return _load_radiology_viewer(doc, db)
+    except Exception as e:
+        print(f"[ERROR] /radiology/{document_id}: {e}")
+        return JSONResponse(status_code=200, content={"error": "An error occurred"})
