@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Noto+Sans+Tamil:wght@400;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="css/styles.css?v=18" />
+  <link rel="stylesheet" href="css/styles.css?v=19" />
 </head>
 <body>
   <div class="bg-aurora" aria-hidden="true"></div>
@@ -120,6 +120,12 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z M12 12l8-4.5M12 12v9M12 12L4 7.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
               View in your room
             </button>
+            <!-- iPhone/iPad only: Apple AR Quick Look (static body shape). Shown by js/quicklook.js.
+                 Apple requires the rel="ar" link to contain a single <img>. -->
+            <div class="ql-wrap" id="ql-wrap" hidden>
+              <a class="ql-link" id="btn-quicklook" rel="ar" href="models/nalamnet-body.usdz"><img alt="View in AR (iPhone)" width="700" height="104" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 700 104'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0' stop-color='%232dd4bf'/%3E%3Cstop offset='1' stop-color='%233b82f6'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect x='2' y='2' width='696' height='100' rx='30' fill='url(%23g)'/%3E%3Cg fill='none' stroke='%2304121f' stroke-width='5' stroke-linejoin='round'%3E%3Cpath d='M150 30l20 11v22l-20 11-20-11V41z M150 52l20-11 M150 52v22 M150 52l-20-11'/%3E%3C/g%3E%3Ctext x='188' y='64' font-family='-apple-system,Helvetica,Arial,sans-serif' font-size='34' font-weight='800' fill='%2304121f'%3EView in AR (iPhone)%3C/text%3E%3C/svg%3E" /></a>
+              <p class="ql-note">Basic AR preview — for full interactive findings, use the 3D view below.</p>
+            </div>
             <div id="body-banner"></div>
           </div>
 
@@ -268,6 +274,7 @@
   <script src="js/scan.js?v=14"></script>
   <script src="js/assistant.js?v=14"></script>
   <script src="js/emergency.js?v=15"></script>
+  <script src="js/quicklook.js?v=1"></script>
   <script src="js/app.js?v=14"></script>
 </body>
 </html>

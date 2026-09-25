@@ -582,3 +582,9 @@ details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; alig
 .ar-actions .ar-btn { padding: 0 8px; min-width: 0; font-size: 15px; }
 .ar-btn.pulse { animation: arPulse 1.2s ease-in-out infinite; border-color: var(--teal); }
 @keyframes arPulse { 50% { box-shadow: 0 0 0 6px rgba(45, 212, 191, .35); } }
+
+/* iPhone/iPad AR Quick Look link (static USDZ preview; separate from WebXR AR). */
+.ql-wrap { margin-top: 8px; }
+.ql-link { display: block; border-radius: 16px; box-shadow: var(--glow); line-height: 0; }
+.ql-link img { display: block; width: 100%; height: auto; min-height: 52px; border-radius: 16px; }
+.ql-note { margin: 6px 2px 0; font-size: 13.5px; line-height: 1.35; color: var(--text-2); }
