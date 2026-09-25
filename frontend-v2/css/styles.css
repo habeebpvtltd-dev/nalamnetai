@@ -487,6 +487,10 @@ details.f-quote summary { cursor: pointer; min-height: 48px; display: flex; alig
 .em-row .v { font-size: 19px; font-weight: 700; }
 .call-btn { width: 100%; min-height: 68px; font-size: 20px; margin-top: 16px; border-radius: 20px; }
 .qr-box { display: flex; gap: 16px; align-items: center; }
+/* Status/error notes and retry buttons sit on their own full-width line under the QR. */
+.qr-box { flex-wrap: wrap; }
+.qr-box [role="alert"] { flex-basis: 100%; }
+.qr-box > p:not([role]) { flex: 1 1 140px; min-width: 0; }   /* description stays beside the QR */
 .qr-box img { width: 132px; height: 132px; border-radius: 14px; background: #fff; padding: 6px; flex: none; }
 .qr-box p { margin: 0; color: var(--text-2); font-size: 16px; }
 .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }

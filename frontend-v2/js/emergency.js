@@ -111,17 +111,24 @@ window.EmergencyUI = (() => {
     staggerIn($("em-profile").querySelectorAll(".card, #em-edit"));
   }
 
+  // Returns true when the QR image is showing.
   async function loadQr() {
     const box = $("em-qr");
-    if (!profile?.public_token) { box.innerHTML = `<p>QR code is not available.</p>`; return; }
+    if (!box) return false;
+    if (!profile?.public_token) { box.innerHTML = `<p>QR code is not available.</p>`; return false; }
     try {
       qr = await api(`/emergency/${profile.public_token}/qr`, { timeout: 45000 });
+      if (!qr || !qr.qr_code_base64) throw new Error("No QR image returned");
       box.innerHTML = `<img src="data:image/png;base64,${qr.qr_code_base64}" alt="Emergency QR code" />
         <p>Anyone can scan this to see your blood group, allergies and current medicines, and call your contact.</p>`;
       $("em-print").disabled = false;
       $("em-copy").disabled = false;
+      return true;
     } catch (e) {
-      box.innerHTML = `<p>Couldn't make the QR code right now.</p>`;
+      qr = null;
+      qrMessage(e.timeout ? "The server took too long to make the QR code." : "Couldn't make the QR code right now.",
+        () => { $("em-qr").innerHTML = `<div class="spinner"></div><p>Making your QR code…</p>`; loadQr(); });
+      return false;
     }
   }
 
@@ -158,21 +165,87 @@ window.EmergencyUI = (() => {
     setTimeout(() => w.print(), 500);
   }
 
+  /* "Get a new QR link". No window.confirm(): in-app browsers (WhatsApp, QR scanners…)
+     often return false from it without showing anything, which made the button do nothing.
+     Instead: tap once to arm, tap again within 5 s to confirm. Always shows progress and
+     a visible error, and ignores taps while a request is running. */
+  let regenArmed = false, regenArmTimer = null, regenBusy = false;
+  const REGEN_LABEL = "Get a new QR link";
+
+  function regenButton(state) {
+    const b = $("em-regen");
+    if (!b) return;
+    b.disabled = state === "busy";
+    b.classList.toggle("btn-danger", state === "armed");
+    b.classList.toggle("btn-ghost", state !== "armed");
+    b.innerHTML = state === "armed" ? "Tap again to confirm — old QR codes will stop working"
+      : state === "busy" ? `<span class="spinner" style="width:20px;height:20px;border-width:2px"></span> Making a new QR link…`
+      : REGEN_LABEL;
+  }
+
+  function qrMessage(text, retry) {
+    const box = $("em-qr");
+    if (!box) return;
+    box.innerHTML = `<p role="alert" style="color:#fecaca">${escHtml(text)}</p>${retry ? `<button class="btn btn-glass" id="em-qr-retry" style="flex:none">Try again</button>` : ""}`;
+    const rb = $("em-qr-retry");
+    if (rb) rb.onclick = retry;
+  }
+
   async function regenerate() {
-    if (!pin) return;
-    if (!confirm("Make a new QR link? Old printed QR codes will stop working.")) return;
+    if (regenBusy) return;
+    if (!pin) {
+      toast("Please unlock your card again to make a new QR link.");
+      lock();
+      return;
+    }
+    if (!regenArmed) {
+      regenArmed = true;
+      regenButton("armed");
+      clearTimeout(regenArmTimer);
+      regenArmTimer = setTimeout(() => { regenArmed = false; if (!regenBusy) regenButton("idle"); }, 5000);
+      return;
+    }
+    clearTimeout(regenArmTimer);
+    regenArmed = false;
+    regenBusy = true;
+    regenButton("busy");
+    const oldQr = $("em-qr").innerHTML;
+    $("em-print").disabled = true; $("em-copy").disabled = true;
+    $("em-qr").innerHTML = `<div class="spinner"></div><p>Making a new QR link…</p>`;
     try {
-      const r = await api(`/emergency/regenerate?${new URLSearchParams({ pin })}`, { method: "POST", timeout: 45000 });
+      const r = await api(`/emergency/regenerate?${new URLSearchParams({ pin })}`, {
+        method: "POST", timeout: 60000,
+        onSlow: () => { const p = $("em-qr") && $("em-qr").querySelector("p"); if (p) p.textContent = "Still working… the server may be waking up."; },
+      });
+      if (!r || !r.public_token) throw new Error("No new link returned");
       profile.public_token = r.public_token;
-      toast("New QR link ready. Old QR codes no longer work.");
-      $("em-print").disabled = true; $("em-copy").disabled = true;
-      $("em-qr").innerHTML = `<div class="spinner"></div><p>Making your QR code…</p>`;
-      loadQr();
-    } catch (e) { toast("Couldn't make a new link. Please try again."); }
+      qr = null;
+      const ok = await loadQr();
+      if (ok) toast("New QR link ready. Old QR codes no longer work.");
+    } catch (e) {
+      const msg = e.status === 401 ? "Your PIN was not accepted. Please lock and unlock your card, then try again."
+        : e.timeout ? "The server took too long. Please try again."
+        : !e.status ? "No connection to the server. Check your internet and try again."
+        : "Couldn't make a new QR link. Please try again.";
+      toast(msg);
+      // The old link still works if the request failed, so put the old QR back and say why.
+      $("em-qr").innerHTML = oldQr;
+      $("em-qr").querySelectorAll('[role="alert"]').forEach((n) => n.remove());   // one message at a time
+      $("em-print").disabled = !qr; $("em-copy").disabled = !qr;
+      const note = document.createElement("p");
+      note.setAttribute("role", "alert");
+      note.style.cssText = "color:#fecaca;margin-top:8px";
+      note.textContent = msg;
+      $("em-qr").appendChild(note);
+    } finally {
+      regenBusy = false;
+      regenButton("idle");
+    }
   }
 
   function lock() {
     pin = null; profile = null; qr = null;
+    regenArmed = false; clearTimeout(regenArmTimer);
     $("em-profile").innerHTML = "";
     show("unlock");
   }
