@@ -21,11 +21,10 @@ window.BodyAR = !window.THREE ? null : (() => {
   // Over a real camera image the faint body shell nearly disappears; brighten it in AR only.
   const AR_GLOW = { intensity: 1.7, base: 2.2 };        // multipliers, restored on exit
   // WebXR anchors keep the body locked to the real world while ARCore refines tracking.
-  // DEFAULT: anchors OFF. The body keeps the fixed transform set at placement (in 'local'
-  // space), which tested stable on device. The anchor path (with jump rejection +
-  // smoothing) can still apply large ARCore corrections on some phones, so it is opt-in
-  // only via ?anchors=1.
-  const ANCHORS_ON = /[?&]anchors=1\b/.test(window.location.search);
+  // DEFAULT: anchors ON (tracking-state gating, implausible-jump rejection, smoothing).
+  // ?anchors=0 turns them off (fixed transform set at placement, in 'local' space) as a
+  // venue safety valve.
+  const ANCHORS_ON = !/[?&]anchors=0\b/.test(window.location.search);
   const PICK_ANGLE = THREE.MathUtils ? THREE.MathUtils.degToRad(8) : 0.14;
   // ?ardebug=1: live on-screen diagnostics (read-only; never changes placement/scale/anchor).
   const DEBUG = /[?&]ardebug=1\b/.test(window.location.search);
